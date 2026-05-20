@@ -1,0 +1,33 @@
+{
+  "name": "zylos-zalo-personal",
+  "version": "0.1.0",
+  "description": "Zalo personal account communication channel for Zylos Agent (unofficial, via zca-js)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "homepage": "https://github.com/zylos-ai/zylos-zalo-personal#readme",
+  "bugs": {
+    "url": "https://github.com/zylos-ai/zylos-zalo-personal/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zylos-ai/zylos-zalo-personal.git"
+  },
+  "keywords": [
+    "zylos",
+    "zalo",
+    "zalo-personal",
+    "agent"
+  ],
+  "author": "Zylos AI",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "zca-js": "^2.1.2"
+  }
+}
