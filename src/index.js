@@ -44,6 +44,7 @@ let disconnectedSince = null;
 
 const MENTION_WINDOW_MS = 30000;
 const recentMentions = new Map();
+const pendingThinking = new Map();
 
 // ============================================================
 // C4 bridge
@@ -212,6 +213,18 @@ function isBotMentioned(data) {
   return mentions.some(m => String(m.uid) === String(ownId) || m.type === 1);
 }
 
+function stripBotMention(text, data) {
+  if (!ownId || !text || !data.mentions || !Array.isArray(data.mentions)) return text;
+  const botMentions = data.mentions
+    .filter(m => String(m.uid) === String(ownId) && typeof m.pos === 'number' && typeof m.len === 'number')
+    .sort((a, b) => b.pos - a.pos);
+  let result = text;
+  for (const m of botMentions) {
+    result = result.slice(0, m.pos) + result.slice(m.pos + m.len);
+  }
+  return result.replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
+}
+
 async function parseContent(content, { shouldDownload }) {
   let text = '';
   let mediaPath = null;
@@ -374,10 +387,12 @@ async function handleMessage(message) {
   const smartNoMention = isGroup && groupMode === 'smart' && !mentioned;
   const shouldDownload = config.features?.download_media !== false && !smartNoMention;
 
-  const { text, mediaPath, mediaMetadata } = await parseContent(
+  let { text, mediaPath, mediaMetadata } = await parseContent(
     data.content,
     { shouldDownload }
   );
+
+  if (mentioned) text = stripBotMention(text, data);
 
   // Always log for context history
   const logEntry = {
@@ -401,6 +416,20 @@ async function handleMessage(message) {
 
   if (!smartNoMention) {
     startTyping(threadId, correlationId, threadType);
+    if (api && data.msgId) {
+      api.addReaction(Reactions.LIKE, {
+        data: { msgId: String(data.msgId), cliMsgId: String(data.cliMsgId || data.msgId) },
+        threadId,
+        type: threadType
+      }).then(() => {
+        pendingThinking.set(correlationId, {
+          msgId: String(data.msgId),
+          cliMsgId: String(data.cliMsgId || data.msgId),
+          threadId,
+          threadType
+        });
+      }).catch(() => {});
+    }
   }
 
   // Build C4 message
@@ -734,6 +763,35 @@ function startInternalServer() {
         } catch (err) {
           res.writeHead(500).end(JSON.stringify({ ok: false, error: err.message }));
         }
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/internal/clear-thinking') {
+      const token = req.headers['x-internal-token'];
+      if (token !== internalToken) { res.writeHead(403).end('forbidden'); return; }
+      const chunks = [];
+      let size = 0;
+      req.on('data', chunk => {
+        size += chunk.length;
+        if (size > 4096) { req.destroy(); return; }
+        chunks.push(chunk);
+      });
+      req.on('end', async () => {
+        if (res.headersSent) return;
+        try {
+          const { correlationId } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          const pending = pendingThinking.get(correlationId);
+          if (pending && api) {
+            await api.addReaction(Reactions.NONE, {
+              data: { msgId: pending.msgId, cliMsgId: pending.cliMsgId },
+              threadId: pending.threadId,
+              type: pending.threadType
+            }).catch(() => {});
+            pendingThinking.delete(correlationId);
+          }
+          res.writeHead(200).end(JSON.stringify({ ok: true }));
+        } catch { res.writeHead(400).end('bad json'); }
       });
       return;
     }

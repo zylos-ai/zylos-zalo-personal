@@ -139,6 +139,47 @@ function parseReaction(data) {
 }
 
 // ============================================================
+// stripBotMention (pure logic)
+// ============================================================
+
+function stripBotMention(text, data, ownId) {
+  if (!ownId || !text || !data.mentions || !Array.isArray(data.mentions)) return text;
+  const botMentions = data.mentions
+    .filter(m => String(m.uid) === String(ownId) && typeof m.pos === 'number' && typeof m.len === 'number')
+    .sort((a, b) => b.pos - a.pos);
+  let result = text;
+  for (const m of botMentions) {
+    result = result.slice(0, m.pos) + result.slice(m.pos + m.len);
+  }
+  return result.replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
+}
+
+// ============================================================
+// Thinking indicator tracking (pure logic)
+// ============================================================
+
+function createThinkingTracker() {
+  const pending = new Map();
+  return {
+    add(correlationId, data) {
+      pending.set(correlationId, data);
+    },
+    get(correlationId) {
+      return pending.get(correlationId);
+    },
+    remove(correlationId) {
+      pending.delete(correlationId);
+    },
+    has(correlationId) {
+      return pending.has(correlationId);
+    },
+    size() {
+      return pending.size;
+    }
+  };
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -502,6 +543,128 @@ describe('smart mode download logic', () => {
 
   it('skips download when feature disabled', () => {
     assert.equal(shouldDownload({ downloadEnabled: false, smartNoMention: false }), false);
+  });
+});
+
+describe('stripBotMention', () => {
+  const BOT_ID = '634535186919667503';
+
+  it('strips bot mention from start of text', () => {
+    const result = stripBotMention('@Rui hey test', {
+      mentions: [{ uid: BOT_ID, pos: 0, len: 4 }]
+    }, BOT_ID);
+    assert.equal(result, 'hey test');
+  });
+
+  it('strips bot mention from middle of text', () => {
+    const result = stripBotMention('hello @Rui what do you think', {
+      mentions: [{ uid: BOT_ID, pos: 6, len: 4 }]
+    }, BOT_ID);
+    assert.equal(result, 'hello what do you think');
+  });
+
+  it('strips multiple bot mentions', () => {
+    const result = stripBotMention('@Rui hey @Rui test', {
+      mentions: [
+        { uid: BOT_ID, pos: 0, len: 4 },
+        { uid: BOT_ID, pos: 9, len: 4 }
+      ]
+    }, BOT_ID);
+    assert.equal(result, 'hey test');
+  });
+
+  it('preserves other user mentions', () => {
+    const result = stripBotMention('@Rui hey @Felix check this', {
+      mentions: [
+        { uid: BOT_ID, pos: 0, len: 4 },
+        { uid: '999', pos: 9, len: 6 }
+      ]
+    }, BOT_ID);
+    assert.equal(result, 'hey @Felix check this');
+  });
+
+  it('returns original text when no ownId', () => {
+    assert.equal(stripBotMention('@Rui test', { mentions: [{ uid: '123', pos: 0, len: 4 }] }, null), '@Rui test');
+    assert.equal(stripBotMention('@Rui test', { mentions: [{ uid: '123', pos: 0, len: 4 }] }, ''), '@Rui test');
+  });
+
+  it('returns original text when no mentions array', () => {
+    assert.equal(stripBotMention('hello', {}, BOT_ID), 'hello');
+    assert.equal(stripBotMention('hello', { mentions: null }, BOT_ID), 'hello');
+  });
+
+  it('returns original text when mentions is not an array', () => {
+    assert.equal(stripBotMention('hello', { mentions: 'bad' }, BOT_ID), 'hello');
+  });
+
+  it('handles mention without pos/len gracefully', () => {
+    const result = stripBotMention('@Rui test', {
+      mentions: [{ uid: BOT_ID }]
+    }, BOT_ID);
+    assert.equal(result, '@Rui test');
+  });
+
+  it('trims leading whitespace after stripping', () => {
+    const result = stripBotMention('@Rui  hello', {
+      mentions: [{ uid: BOT_ID, pos: 0, len: 4 }]
+    }, BOT_ID);
+    assert.equal(result, 'hello');
+  });
+
+  it('matches uid across string/number types', () => {
+    const result = stripBotMention('@Bot test', {
+      mentions: [{ uid: 12345, pos: 0, len: 4 }]
+    }, '12345');
+    assert.equal(result, 'test');
+  });
+
+  it('handles empty text', () => {
+    assert.equal(stripBotMention('', { mentions: [] }, BOT_ID), '');
+  });
+});
+
+describe('thinking indicator tracking', () => {
+  it('stores and retrieves pending reactions', () => {
+    const tracker = createThinkingTracker();
+    tracker.add('g1:msg1', { msgId: '100', cliMsgId: '200', threadId: 'g1', threadType: 1 });
+    const pending = tracker.get('g1:msg1');
+    assert.equal(pending.msgId, '100');
+    assert.equal(pending.cliMsgId, '200');
+    assert.equal(pending.threadId, 'g1');
+  });
+
+  it('removes pending reactions', () => {
+    const tracker = createThinkingTracker();
+    tracker.add('g1:msg1', { msgId: '100' });
+    assert.equal(tracker.has('g1:msg1'), true);
+    tracker.remove('g1:msg1');
+    assert.equal(tracker.has('g1:msg1'), false);
+    assert.equal(tracker.get('g1:msg1'), undefined);
+  });
+
+  it('tracks multiple independent reactions', () => {
+    const tracker = createThinkingTracker();
+    tracker.add('g1:msg1', { msgId: '100' });
+    tracker.add('g1:msg2', { msgId: '200' });
+    tracker.add('dm:msg3', { msgId: '300' });
+    assert.equal(tracker.size(), 3);
+    tracker.remove('g1:msg1');
+    assert.equal(tracker.size(), 2);
+    assert.equal(tracker.has('g1:msg2'), true);
+    assert.equal(tracker.has('dm:msg3'), true);
+  });
+
+  it('returns false for non-existent correlation', () => {
+    const tracker = createThinkingTracker();
+    assert.equal(tracker.has('nonexistent'), false);
+  });
+
+  it('overwrites on duplicate correlationId', () => {
+    const tracker = createThinkingTracker();
+    tracker.add('g1:msg1', { msgId: '100' });
+    tracker.add('g1:msg1', { msgId: '999' });
+    assert.equal(tracker.get('g1:msg1').msgId, '999');
+    assert.equal(tracker.size(), 1);
   });
 });
 

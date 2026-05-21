@@ -18,7 +18,6 @@
 
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import { loadConfig, DATA_DIR } from '../src/lib/config.js';
 
 const MAX_LENGTH = 2000;
@@ -107,9 +106,15 @@ function markTypingDone(correlationId) {
 
 const config = loadConfig();
 const internalPort = config.internal_port || 3463;
-const internalToken = crypto.createHash('sha256')
-  .update(String(config.ownId || 'zalo-personal'))
-  .digest('hex');
+const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
+const TOKEN_PATH = path.join(SESSIONS_DIR, '.internal-token');
+let internalToken;
+try {
+  internalToken = fs.readFileSync(TOKEN_PATH, 'utf8').trim();
+} catch {
+  console.error('[zalo-personal] Cannot read internal token — is the service running?');
+  process.exit(1);
+}
 
 async function recordOutgoing(chatId, text) {
   try {
@@ -141,6 +146,21 @@ async function sendViaService(chatId, action) {
   return resp.json();
 }
 
+async function clearThinking(correlationId) {
+  if (!correlationId) return;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    await fetch(`http://127.0.0.1:${internalPort}/internal/clear-thinking`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Token': internalToken },
+      body: JSON.stringify({ correlationId }),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+  } catch {}
+}
+
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -166,6 +186,7 @@ async function main() {
 
   try {
     if (message.trim() === '[SKIP]') {
+      await clearThinking(correlationId);
       markTypingDone(correlationId);
       console.log('Skipped (smart mode)');
       return;
@@ -177,6 +198,7 @@ async function main() {
       const filePath = message.substring(prefix.length);
       if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
 
+      await clearThinking(correlationId);
       await sendViaService(chatId, {
         type: 'attachment',
         filePath,
@@ -190,6 +212,7 @@ async function main() {
     }
 
     // Text message
+    await clearThinking(correlationId);
     const cleaned = stripMarkdown(message);
     const chunks = splitMessage(cleaned, MAX_LENGTH);
 
@@ -208,6 +231,7 @@ async function main() {
     await recordOutgoing(chatId, message);
     console.log('Message sent successfully');
   } catch (err) {
+    await clearThinking(correlationId);
     markTypingDone(correlationId);
     console.error(`Error: ${err.message}`);
     process.exit(1);
