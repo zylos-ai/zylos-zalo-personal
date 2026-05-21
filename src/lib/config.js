@@ -59,9 +59,9 @@ export function loadConfig() {
 
 export function saveConfig(config) {
   try {
-    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
     const tmp = `${CONFIG_PATH}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
     fs.renameSync(tmp, CONFIG_PATH);
     cachedConfig = null;
   } catch (err) {

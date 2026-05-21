@@ -68,8 +68,8 @@ via saved credentials in `~/zylos/components/zalo-personal/sessions/`.
 | Groups | No | Full support |
 | Reactions | No | 11 emoji types |
 | Typing | Basic | Yes |
-| Read receipts | No | Yes |
-| Message delete | No | Yes |
+| Read receipts | No | Internal API only |
+| Message delete | No | No |
 | Mentions | No | Yes |
 
 ## Sending Messages

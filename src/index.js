@@ -15,6 +15,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import dns from 'dns/promises';
 import { Zalo, LoginQRCallbackEventType, ThreadType, Reactions } from 'zca-js';
 
 import { loadConfig, saveConfig, DATA_DIR } from './lib/config.js';
@@ -33,7 +34,7 @@ const MEDIA_DIR = path.join(DATA_DIR, 'media');
 const CREDENTIALS_PATH = path.join(SESSIONS_DIR, 'credentials.json');
 
 fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
-fs.mkdirSync(MEDIA_DIR, { recursive: true });
+fs.mkdirSync(MEDIA_DIR, { recursive: true, mode: 0o700 });
 
 let config = loadConfig();
 let api = null;
@@ -45,6 +46,19 @@ let disconnectedSince = null;
 const MENTION_WINDOW_MS = 30000;
 const recentMentions = new Map();
 const pendingThinking = new Map();
+const PENDING_THINKING_TTL_MS = 5 * 60 * 1000;
+
+function clearPendingThinking(correlationId) {
+  const pending = pendingThinking.get(correlationId);
+  if (pending && api) {
+    api.addReaction(Reactions.NONE, {
+      data: { msgId: pending.msgId, cliMsgId: pending.cliMsgId },
+      threadId: pending.threadId,
+      type: pending.threadType
+    }).catch(() => {});
+  }
+  pendingThinking.delete(correlationId);
+}
 
 // ============================================================
 // C4 bridge
@@ -60,7 +74,7 @@ function execC4(source, endpoint, content, callback) {
   execFile('node', args, { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024 }, callback);
 }
 
-function sendToC4(source, endpoint, content, onReject) {
+function sendToC4(source, endpoint, content, onReject, onFinalFailure) {
   if (!content) return;
 
   execC4(source, endpoint, content, (error, stdout) => {
@@ -79,7 +93,12 @@ function sendToC4(source, endpoint, content, onReject) {
       execC4(source, endpoint, content, (retryError, retryStdout) => {
         if (!retryError) return;
         const r = parseC4Response(retryStdout);
-        if (r?.ok === false && r.error?.message && onReject) onReject(r.error.message);
+        if (r?.ok === false && r.error?.message && onReject) {
+          onReject(r.error.message);
+        } else if (onFinalFailure) {
+          console.error(`[zalo-personal] C4 delivery failed after retry: ${retryError.message}`);
+          onFinalFailure();
+        }
       });
     }, 2000);
   });
@@ -90,7 +109,7 @@ function sendToC4(source, endpoint, content, onReject) {
 // ============================================================
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
-fs.mkdirSync(TYPING_DIR, { recursive: true });
+fs.mkdirSync(TYPING_DIR, { recursive: true, mode: 0o700 });
 
 const TYPING_TIMEOUT = 120000;
 const activeTyping = new Map();
@@ -141,6 +160,15 @@ const typingPollInterval = setInterval(() => {
   for (const [key, ts] of recentMentions) {
     if (now - ts > MENTION_WINDOW_MS) recentMentions.delete(key);
   }
+  for (const [id, entry] of pendingThinking) {
+    if (entry.createdAt && now - entry.createdAt > PENDING_THINKING_TTL_MS) {
+      clearPendingThinking(id);
+    }
+  }
+  const MSG_CACHE_TTL_MS = 10 * 60 * 1000;
+  for (const [id, entry] of messageCache) {
+    if (entry.cachedAt && now - entry.cachedAt > MSG_CACHE_TTL_MS) messageCache.delete(id);
+  }
 }, 30000);
 
 // Clean stale markers
@@ -179,7 +207,8 @@ function cacheMessage(msgId, data) {
     msgType: data.msgType || 'webchat',
     ts: data.ts,
     content: data.content,
-    ttl: data.ttl || 0
+    ttl: data.ttl || 0,
+    cachedAt: Date.now()
   });
   if (messageCache.size > 200) {
     const firstKey = messageCache.keys().next().value;
@@ -302,12 +331,70 @@ async function parseContent(content, { shouldDownload }) {
 const MAX_DOWNLOAD_BYTES = (config.features?.max_download_mb || 50) * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
+const ALLOWED_DOWNLOAD_HOSTS = [
+  /\.zdn\.vn$/i, /\.zadn\.vn$/i, /\.dlfl\.vn$/i, /\.zaloapp\.com$/i,
+  /\.zalo\.me$/i, /\.zalo\.vn$/i,
+];
+const PRIVATE_IP_RANGES = [
+  /^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./,
+  /^0\./, /^169\.254\./, /^::1$/, /^fc00:/i, /^fe80:/i, /^fd/i,
+];
+
+function isPrivateIp(ip) {
+  return PRIVATE_IP_RANGES.some(re => re.test(ip));
+}
+
+function isAllowedDownloadHost(hostname) {
+  return ALLOWED_DOWNLOAD_HOSTS.some(re => re.test(hostname));
+}
+
+async function validateDownloadUrl(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  if (parsed.protocol !== 'https:') return false;
+  if (!isAllowedDownloadHost(parsed.hostname)) return false;
+  try {
+    const { address } = await dns.lookup(parsed.hostname);
+    if (isPrivateIp(address)) return false;
+  } catch { return false; }
+  return true;
+}
+
 async function downloadUrl(url) {
+  if (!(await validateDownloadUrl(url))) {
+    console.warn(`[zalo-personal] Download blocked: ${url}`);
+    return null;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
   try {
-    const resp = await fetch(url, { signal: controller.signal });
+    // redirect: 'manual' to validate each hop
+    let currentUrl = url;
+    let redirects = 0;
+    const MAX_REDIRECTS = 5;
+    let resp;
+    while (redirects <= MAX_REDIRECTS) {
+      resp = await fetch(currentUrl, { signal: controller.signal, redirect: 'manual' });
+      if ([301, 302, 303, 307, 308].includes(resp.status)) {
+        const location = resp.headers.get('location');
+        if (!location) return null;
+        currentUrl = new URL(location, currentUrl).href;
+        if (!(await validateDownloadUrl(currentUrl))) {
+          console.warn(`[zalo-personal] Redirect blocked: ${currentUrl}`);
+          return null;
+        }
+        redirects++;
+        continue;
+      }
+      break;
+    }
+    if (redirects > MAX_REDIRECTS) return null;
     if (!resp.ok) return null;
+    const contentType = resp.headers.get('content-type') || '';
+    if (!contentType.startsWith('image/') && !contentType.startsWith('application/octet-stream') &&
+        !contentType.startsWith('video/') && !contentType.startsWith('audio/')) {
+      return null;
+    }
     const contentLength = parseInt(resp.headers.get('content-length') || '0', 10);
     if (contentLength > MAX_DOWNLOAD_BYTES) return null;
     const chunks = [];
@@ -426,7 +513,8 @@ async function handleMessage(message) {
           msgId: String(data.msgId),
           cliMsgId: String(data.cliMsgId || data.msgId),
           threadId,
-          threadType
+          threadType,
+          createdAt: Date.now()
         });
       }).catch(() => {});
     }
@@ -460,7 +548,11 @@ async function handleMessage(message) {
 
   sendToC4('zalo-personal', endpoint, msg, async (errMsg) => {
     stopTyping(correlationId);
+    clearPendingThinking(correlationId);
     await api.sendMessage(errMsg, threadId, threadType).catch(() => {});
+  }, () => {
+    stopTyping(correlationId);
+    clearPendingThinking(correlationId);
   });
 }
 
@@ -608,6 +700,14 @@ async function authenticate() {
 // ============================================================
 
 const INTERNAL_PORT = config.internal_port || 3463;
+
+function timingSafeTokenEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
 let internalServer = null;
 
 const INTERNAL_TOKEN_PATH = path.join(SESSIONS_DIR, '.internal-token');
@@ -629,7 +729,7 @@ function startInternalServer() {
   internalServer = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/internal/record-outgoing') {
       const token = req.headers['x-internal-token'];
-      if (token !== internalToken) { res.writeHead(403).end('forbidden'); return; }
+      if (!timingSafeTokenEqual(token, internalToken)) { res.writeHead(403).end('forbidden'); return; }
 
       const chunks = [];
       let size = 0;
@@ -658,7 +758,7 @@ function startInternalServer() {
 
     if (req.method === 'POST' && req.url === '/internal/send') {
       const token = req.headers['x-internal-token'];
-      if (token !== internalToken) { res.writeHead(403).end('forbidden'); return; }
+      if (!timingSafeTokenEqual(token, internalToken)) { res.writeHead(403).end('forbidden'); return; }
 
       const chunks = [];
       let size = 0;
@@ -698,13 +798,25 @@ function startInternalServer() {
             }
             res.writeHead(200).end(JSON.stringify({ ok: true }));
           } else if (action.type === 'attachment') {
-            const resolved = path.resolve(action.filePath);
-            const allowed = [MEDIA_DIR, '/tmp'].some(d => resolved.startsWith(d + path.sep) || resolved === d);
-            if (!allowed || !fs.existsSync(resolved) || fs.lstatSync(resolved).isSymbolicLink()) {
-              res.writeHead(403).end(JSON.stringify({ ok: false, error: 'path not allowed' }));
+            const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+            const STAGING_DIR = path.join(MEDIA_DIR, 'staging');
+            fs.mkdirSync(STAGING_DIR, { recursive: true, mode: 0o700 });
+            const resolved = fs.realpathSync(path.resolve(action.filePath));
+            const allowed = [MEDIA_DIR, STAGING_DIR].some(d => resolved.startsWith(d + path.sep));
+            if (!allowed) {
+              res.writeHead(403).end(JSON.stringify({ ok: false, error: 'path not allowed — must be in component media dir' }));
+            } else if (!fs.existsSync(resolved)) {
+              res.writeHead(404).end(JSON.stringify({ ok: false, error: 'file not found' }));
             } else {
-              await api.sendMessage({ msg: '', attachments: [resolved] }, chatId, threadType);
-              res.writeHead(200).end(JSON.stringify({ ok: true }));
+              const stat = fs.statSync(resolved);
+              if (!stat.isFile()) {
+                res.writeHead(403).end(JSON.stringify({ ok: false, error: 'not a regular file' }));
+              } else if (stat.size > MAX_ATTACHMENT_BYTES) {
+                res.writeHead(413).end(JSON.stringify({ ok: false, error: `file too large (${(stat.size / 1024 / 1024).toFixed(1)}MB, max 25MB)` }));
+              } else {
+                await api.sendMessage({ msg: '', attachments: [resolved] }, chatId, threadType);
+                res.writeHead(200).end(JSON.stringify({ ok: true }));
+              }
             }
           } else if (action.type === 'reaction') {
             const reactionMap = {
@@ -769,7 +881,7 @@ function startInternalServer() {
 
     if (req.method === 'POST' && req.url === '/internal/clear-thinking') {
       const token = req.headers['x-internal-token'];
-      if (token !== internalToken) { res.writeHead(403).end('forbidden'); return; }
+      if (!timingSafeTokenEqual(token, internalToken)) { res.writeHead(403).end('forbidden'); return; }
       const chunks = [];
       let size = 0;
       req.on('data', chunk => {
@@ -781,15 +893,7 @@ function startInternalServer() {
         if (res.headersSent) return;
         try {
           const { correlationId } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          const pending = pendingThinking.get(correlationId);
-          if (pending && api) {
-            await api.addReaction(Reactions.NONE, {
-              data: { msgId: pending.msgId, cliMsgId: pending.cliMsgId },
-              threadId: pending.threadId,
-              type: pending.threadType
-            }).catch(() => {});
-            pendingThinking.delete(correlationId);
-          }
+          clearPendingThinking(correlationId);
           res.writeHead(200).end(JSON.stringify({ ok: true }));
         } catch { res.writeHead(400).end('bad json'); }
       });
