@@ -66,7 +66,20 @@ export function ensureReplay(chatId, config) {
 
   const limit = getHistoryLimit(chatId, config);
   try {
-    const content = fs.readFileSync(logFile, 'utf-8');
+    const TAIL_BYTES = 64 * 1024;
+    const stat = fs.statSync(logFile);
+    let content;
+    if (stat.size <= TAIL_BYTES) {
+      content = fs.readFileSync(logFile, 'utf-8');
+    } else {
+      const buf = Buffer.alloc(TAIL_BYTES);
+      const fd = fs.openSync(logFile, 'r');
+      fs.readSync(fd, buf, 0, TAIL_BYTES, stat.size - TAIL_BYTES);
+      fs.closeSync(fd);
+      content = buf.toString('utf-8');
+      const nl = content.indexOf('\n');
+      if (nl >= 0) content = content.substring(nl + 1);
+    }
     const lines = content.trim().split('\n').filter(l => l);
     const tail = lines.slice(-limit);
     for (const line of tail) {

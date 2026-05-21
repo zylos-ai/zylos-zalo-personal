@@ -8,7 +8,7 @@
  * WARNING: Unofficial API — risk of account ban and API breakage.
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import http from 'http';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -32,13 +32,15 @@ const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
 const CREDENTIALS_PATH = path.join(SESSIONS_DIR, 'credentials.json');
 
-fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 let config = loadConfig();
 let api = null;
 let ownId = null;
 let stopped = false;
+let wsHealthy = false;
+let disconnectedSince = null;
 
 const MENTION_WINDOW_MS = 30000;
 const recentMentions = new Map();
@@ -52,12 +54,15 @@ function parseC4Response(stdout) {
   try { return JSON.parse(stdout.trim()); } catch { return null; }
 }
 
+function execC4(source, endpoint, content, callback) {
+  const args = [C4_RECEIVE, '--channel', source, '--endpoint', endpoint, '--json', '--content', content];
+  execFile('node', args, { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024 }, callback);
+}
+
 function sendToC4(source, endpoint, content, onReject) {
   if (!content) return;
-  const safeContent = content.replace(/'/g, "'\\''");
-  const cmd = `node "${C4_RECEIVE}" --channel "${source}" --endpoint "${endpoint}" --json --content '${safeContent}'`;
 
-  exec(cmd, { encoding: 'utf8', timeout: 30000 }, (error, stdout) => {
+  execC4(source, endpoint, content, (error, stdout) => {
     if (!error) {
       console.log(`[zalo-personal] Sent to C4: ${content.substring(0, 60)}...`);
       return;
@@ -70,7 +75,7 @@ function sendToC4(source, endpoint, content, onReject) {
     }
     console.warn(`[zalo-personal] C4 send failed, retrying in 2s: ${error.message}`);
     setTimeout(() => {
-      exec(cmd, { encoding: 'utf8', timeout: 30000 }, (retryError, retryStdout) => {
+      execC4(source, endpoint, content, (retryError, retryStdout) => {
         if (!retryError) return;
         const r = parseC4Response(retryStdout);
         if (r?.ok === false && r.error?.message && onReject) onReject(r.error.message);
@@ -131,6 +136,9 @@ const typingPollInterval = setInterval(() => {
   const now = Date.now();
   for (const [id, state] of activeTyping) {
     if (now - state.startedAt > TYPING_TIMEOUT) stopTyping(id);
+  }
+  for (const [key, ts] of recentMentions) {
+    if (now - ts > MENTION_WINDOW_MS) recentMentions.delete(key);
   }
 }, 30000);
 
@@ -278,10 +286,30 @@ async function parseContent(content, { shouldDownload }) {
   return { text, mediaPath, mediaMetadata };
 }
 
+const MAX_DOWNLOAD_BYTES = (config.features?.max_download_mb || 50) * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 30000;
+
 async function downloadUrl(url) {
-  const resp = await fetch(url);
-  if (!resp.ok) return null;
-  return Buffer.from(await resp.arrayBuffer());
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    if (!resp.ok) return null;
+    const contentLength = parseInt(resp.headers.get('content-length') || '0', 10);
+    if (contentLength > MAX_DOWNLOAD_BYTES) return null;
+    const chunks = [];
+    let received = 0;
+    for await (const chunk of resp.body) {
+      received += chunk.length;
+      if (received > MAX_DOWNLOAD_BYTES) return null;
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function handleMessage(message) {
@@ -471,7 +499,7 @@ function startKeepAlive() {
 // ============================================================
 
 function saveCredentials(credentials) {
-  fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(credentials, null, 2));
+  fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(credentials, null, 2), { mode: 0o600 });
   console.log('[zalo-personal] Credentials saved');
 }
 
@@ -553,10 +581,21 @@ async function authenticate() {
 const INTERNAL_PORT = config.internal_port || 3463;
 let internalServer = null;
 
+const INTERNAL_TOKEN_PATH = path.join(SESSIONS_DIR, '.internal-token');
+
+function getOrCreateInternalToken() {
+  try {
+    if (fs.existsSync(INTERNAL_TOKEN_PATH)) {
+      return fs.readFileSync(INTERNAL_TOKEN_PATH, 'utf8').trim();
+    }
+  } catch {}
+  const token = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(INTERNAL_TOKEN_PATH, token, { mode: 0o600 });
+  return token;
+}
+
 function startInternalServer() {
-  const internalToken = crypto.createHash('sha256')
-    .update(String(ownId || 'zalo-personal'))
-    .digest('hex');
+  const internalToken = getOrCreateInternalToken();
 
   internalServer = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/internal/record-outgoing') {
@@ -630,8 +669,14 @@ function startInternalServer() {
             }
             res.writeHead(200).end(JSON.stringify({ ok: true }));
           } else if (action.type === 'attachment') {
-            await api.sendMessage({ msg: '', attachments: [action.filePath] }, chatId, threadType);
-            res.writeHead(200).end(JSON.stringify({ ok: true }));
+            const resolved = path.resolve(action.filePath);
+            const allowed = [MEDIA_DIR, '/tmp'].some(d => resolved.startsWith(d + path.sep) || resolved === d);
+            if (!allowed || !fs.existsSync(resolved) || fs.lstatSync(resolved).isSymbolicLink()) {
+              res.writeHead(403).end(JSON.stringify({ ok: false, error: 'path not allowed' }));
+            } else {
+              await api.sendMessage({ msg: '', attachments: [resolved] }, chatId, threadType);
+              res.writeHead(200).end(JSON.stringify({ ok: true }));
+            }
           } else if (action.type === 'reaction') {
             const reactionMap = {
               'heart': Reactions.HEART, '❤️': Reactions.HEART, '❤': Reactions.HEART,
@@ -695,7 +740,9 @@ function startInternalServer() {
 
     if (req.method === 'GET' && req.url === '/internal/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
-        connected: !!api,
+        connected: !!api && wsHealthy,
+        wsHealthy,
+        disconnectedSince,
         ownId,
         uptime: process.uptime()
       }));
@@ -716,9 +763,15 @@ function startInternalServer() {
     res.writeHead(404).end();
   });
 
+  let portRetries = 0;
   internalServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`[zalo-personal] Port ${INTERNAL_PORT} in use, retrying in 3s`);
+      portRetries++;
+      if (portRetries > 3) {
+        console.error(`[zalo-personal] Port ${INTERNAL_PORT} still in use after ${portRetries} attempts, exiting`);
+        process.exit(1);
+      }
+      console.error(`[zalo-personal] Port ${INTERNAL_PORT} in use, retry ${portRetries}/3 in 3s`);
       setTimeout(() => internalServer.listen(INTERNAL_PORT, '127.0.0.1'), 3000);
     }
   });
@@ -727,6 +780,49 @@ function startInternalServer() {
     console.log(`[zalo-personal] Internal server on 127.0.0.1:${INTERNAL_PORT}`);
   });
 }
+
+// ============================================================
+// Cleanup: media + log rotation
+// ============================================================
+
+const MEDIA_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+const LOGS_DIR = path.join(DATA_DIR, 'logs');
+
+function runCleanup() {
+  try {
+    const now = Date.now();
+    for (const file of fs.readdirSync(MEDIA_DIR)) {
+      try {
+        const fp = path.join(MEDIA_DIR, file);
+        if (now - fs.statSync(fp).mtimeMs > MEDIA_MAX_AGE_MS) fs.unlinkSync(fp);
+      } catch {}
+    }
+  } catch {}
+  try {
+    for (const file of fs.readdirSync(LOGS_DIR)) {
+      if (!file.endsWith('.jsonl')) continue;
+      try {
+        const fp = path.join(LOGS_DIR, file);
+        const stat = fs.statSync(fp);
+        if (stat.size <= LOG_MAX_BYTES) continue;
+        const keepBytes = 1024 * 1024;
+        const buf = Buffer.alloc(keepBytes);
+        const fd = fs.openSync(fp, 'r');
+        fs.readSync(fd, buf, 0, keepBytes, stat.size - keepBytes);
+        fs.closeSync(fd);
+        let content = buf.toString('utf-8');
+        const nl = content.indexOf('\n');
+        if (nl >= 0) content = content.substring(nl + 1);
+        fs.writeFileSync(fp, content);
+        console.log(`[zalo-personal] Truncated log ${file}: ${(stat.size / 1024).toFixed(0)}KB → ${(content.length / 1024).toFixed(0)}KB`);
+      } catch {}
+    }
+  } catch {}
+}
+
+const cleanupInterval = setInterval(runCleanup, 6 * 60 * 60 * 1000);
+runCleanup();
 
 // ============================================================
 // Main
@@ -775,10 +871,14 @@ async function main() {
 
   api.listener.on('connected', () => {
     console.log('[zalo-personal] WebSocket connected');
+    wsHealthy = true;
+    disconnectedSince = null;
   });
 
   api.listener.on('closed', (code, reason) => {
     console.log(`[zalo-personal] WebSocket closed: ${code} ${reason}`);
+    wsHealthy = false;
+    if (!disconnectedSince) disconnectedSince = new Date().toISOString();
     if (!stopped && code !== 1000) {
       console.log('[zalo-personal] Will auto-restart via PM2');
     }
@@ -796,6 +896,7 @@ function shutdown() {
   stopped = true;
 
   clearInterval(typingPollInterval);
+  clearInterval(cleanupInterval);
   if (typingWatcher) typingWatcher.close();
   if (keepAliveInterval) clearInterval(keepAliveInterval);
 
