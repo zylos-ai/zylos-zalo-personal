@@ -50,3 +50,19 @@ export function isGroupSenderAllowed(config, groupId, userId) {
 export function getGroupConfig(config, groupId) {
   return config.groups?.[String(groupId)] || null;
 }
+
+export function getGroupMode(config, groupId) {
+  const gc = getGroupConfig(config, groupId);
+  return gc?.mode || 'mention';
+}
+
+export function registerGroup(config, groupId, { name, mode } = {}) {
+  if (!config.groups) config.groups = {};
+  config.groups[String(groupId)] = {
+    name: name || String(groupId),
+    mode: mode || 'mention',
+    allowFrom: ['*']
+  };
+  saveConfig(config);
+  console.log(`[zalo-personal] Auto-registered group ${groupId} (${name || 'unnamed'}) in ${mode || 'mention'} mode`);
+}

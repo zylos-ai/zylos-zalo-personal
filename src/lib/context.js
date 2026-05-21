@@ -94,7 +94,7 @@ export function getHistory(chatId, excludeMessageId, config) {
 }
 
 export function formatMessage(opts) {
-  const { chatType, groupName, userName, text, contextMessages, mediaPath } = opts;
+  const { chatType, groupName, userName, text, contextMessages, mediaPath, smartHint } = opts;
 
   let prefix;
   if (chatType === 'dm') {
@@ -104,6 +104,12 @@ export function formatMessage(opts) {
   }
 
   const parts = [`${prefix} ${escapeXml(userName)} said: `];
+
+  if (smartHint) {
+    parts.push(`<smart-mode>
+You are observing this group in smart mode. Only respond if the message is directed at you, asks a question you can help with, or you have something genuinely useful to add. Most messages should be silently observed.
+</smart-mode>\n\n`);
+  }
 
   if (contextMessages && contextMessages.length > 0) {
     const contextLines = contextMessages.map(m =>

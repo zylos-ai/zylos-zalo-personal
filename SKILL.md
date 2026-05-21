@@ -81,6 +81,29 @@ message
 EOF
 ```
 
+## Group Modes
+
+Each group has a `mode` setting (default: `mention`):
+
+| Mode | Behavior | Media downloads |
+|------|----------|----------------|
+| `mention` | Only forward messages that @mention the bot | Download when @mentioned |
+| `smart` | Forward ALL messages to Claude | Metadata-only unless @mentioned |
+
+Smart mode sends a `<smart-mode>` hint so Claude knows to only respond when appropriate.
+Smart mode without @mention skips typing indicators and media downloads (sends `[image, url: ...]` or `[file: name]` metadata instead).
+
+Config example:
+```json
+"groups": {
+  "123456": {
+    "name": "Team Chat",
+    "mode": "smart",
+    "allowFrom": ["*"]
+  }
+}
+```
+
 ## Config Location
 
 - Config: `~/zylos/components/zalo-personal/config.json`

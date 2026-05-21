@@ -15,12 +15,12 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import { Zalo, LoginQRCallbackEventType, ThreadType } from 'zca-js';
+import { Zalo, LoginQRCallbackEventType, ThreadType, Reactions } from 'zca-js';
 
 import { loadConfig, saveConfig, DATA_DIR } from './lib/config.js';
 import {
   hasOwner, bindOwner, isOwner, isDmAllowed,
-  isGroupAllowed, isGroupSenderAllowed, getGroupConfig
+  isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, registerGroup
 } from './lib/auth.js';
 import {
   logAndRecord, ensureReplay, getHistory, formatMessage
@@ -39,6 +39,9 @@ let config = loadConfig();
 let api = null;
 let ownId = null;
 let stopped = false;
+
+const MENTION_WINDOW_MS = 30000;
+const recentMentions = new Map();
 
 // ============================================================
 // C4 bridge
@@ -153,10 +156,27 @@ function buildEndpoint(threadId, { messageId, threadType } = {}) {
 }
 
 // ============================================================
-// User info cache
+// User info cache + message cache (for quote-reply)
 // ============================================================
 
 const userNameCache = new Map();
+const messageCache = new Map();
+
+function cacheMessage(msgId, data) {
+  messageCache.set(String(msgId), {
+    msgId: data.msgId,
+    cliMsgId: data.cliMsgId,
+    uidFrom: data.uidFrom,
+    msgType: data.msgType || 'webchat',
+    ts: data.ts,
+    content: data.content,
+    ttl: data.ttl || 0
+  });
+  if (messageCache.size > 200) {
+    const firstKey = messageCache.keys().next().value;
+    messageCache.delete(firstKey);
+  }
+}
 
 async function getUserName(userId) {
   if (userNameCache.has(userId)) return userNameCache.get(userId);
@@ -177,6 +197,93 @@ async function getUserName(userId) {
 // Message handlers
 // ============================================================
 
+function isBotMentioned(data) {
+  if (!ownId) return false;
+  const mentions = data.mentions;
+  if (!mentions || !Array.isArray(mentions)) return false;
+  return mentions.some(m => String(m.uid) === String(ownId) || m.type === 1);
+}
+
+async function parseContent(content, { shouldDownload }) {
+  let text = '';
+  let mediaPath = null;
+  let mediaMetadata = null;
+
+  if (typeof content === 'string') {
+    text = content;
+  } else if (content && typeof content === 'object') {
+    if (content.params?.photoId || content.thumbUrl || content.hdUrl) {
+      const imgUrl = content.hdUrl || content.normalUrl || content.thumbUrl || content.href;
+      if (!shouldDownload) {
+        text = content.desc || content.description || content.title || '[sent an image]';
+        mediaMetadata = imgUrl ? `[image, url: ${imgUrl}]` : '[image]';
+      } else if (imgUrl) {
+        const buf = await downloadUrl(imgUrl);
+        if (buf) {
+          const ext = imgUrl.includes('.png') ? 'png' : 'jpg';
+          const imgPath = path.join(MEDIA_DIR, `img_${Date.now()}.${ext}`);
+          fs.writeFileSync(imgPath, buf);
+          mediaPath = imgPath;
+          text = content.desc || content.description || content.title || '[sent an image]';
+        } else {
+          text = '[sent an image — download failed]';
+        }
+      } else {
+        text = '[sent an image]';
+      }
+    } else if (content.href) {
+      const isZaloCdn = /\.(dlfl\.vn|zadn\.vn|zdn\.vn|zaloapp\.com)\//i.test(content.href);
+      const isImageUrl = /\.(jpg|jpeg|png|gif|webp|bmp)(\?|$)/i.test(content.href) ||
+                         /photo[-.].*\.(zdn\.vn|zadn\.vn)/i.test(content.href);
+      const isDownloadable = isZaloCdn || (content.action === 'oa.open.inapp' && content.title);
+      const isImage = isImageUrl;
+      const fileName = isImage
+        ? null
+        : (content.title || (() => { try { return path.basename(new URL(content.href).pathname); } catch { return null; } })() || `file_${Date.now()}`);
+
+      if (!isDownloadable) {
+        text = `[sent a link: ${content.href}]`;
+      } else if (!shouldDownload) {
+        text = isImage
+          ? (content.desc || content.description || content.title || '[sent an image]')
+          : `[sent a file: ${fileName}]`;
+        mediaMetadata = isImage ? `[image, url: ${content.href}]` : `[file: ${fileName}]`;
+      } else {
+        const ext = isImage ? (content.href.match(/\.(jpg|jpeg|png|gif|webp|bmp)/i)?.[1] || 'jpg') : null;
+        const dlName = isImage ? `img_${Date.now()}.${ext}` : fileName;
+        const safeName = dlName.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const filePath = path.join(MEDIA_DIR, safeName);
+        const buf = await downloadUrl(content.href);
+        if (buf) {
+          fs.writeFileSync(filePath, buf);
+          mediaPath = filePath;
+          text = isImage ? (content.desc || content.description || content.title || '[sent an image]') : `[sent a file: ${content.title || dlName}]`;
+        } else {
+          text = isImage ? '[sent an image — download failed]' : `[sent a file: ${dlName} — download failed]`;
+        }
+      }
+    } else if (content.id != null && content.type != null && content.catId != null) {
+      text = `[sent a sticker]`;
+    } else if (content.title) {
+      text = `[attachment: ${content.title}]`;
+    } else {
+      text = JSON.stringify(content);
+    }
+  }
+
+  if (!text && !mediaPath && !mediaMetadata) {
+    text = '[unsupported message type]';
+  }
+
+  return { text, mediaPath, mediaMetadata };
+}
+
+async function downloadUrl(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) return null;
+  return Buffer.from(await resp.arrayBuffer());
+}
+
 async function handleMessage(message) {
   if (message.isSelf) return;
   config = loadConfig();
@@ -189,10 +296,25 @@ async function handleMessage(message) {
   const threadType = isGroup ? ThreadType.Group : ThreadType.User;
 
   const userName = data.dName || await getUserName(senderId);
+  cacheMessage(messageId, data);
 
   // Access control
   if (isGroup) {
-    if (!isGroupAllowed(config, threadId)) return;
+    if (!isGroupAllowed(config, threadId)) {
+      // Auto-register if owner @mentions the bot in an unknown group
+      if (isOwner(config, senderId) && isBotMentioned(data)) {
+        let groupName = threadId;
+        try {
+          const info = await api.getGroupInfo([threadId]);
+          const gd = info?.gridInfoMap?.[threadId];
+          if (gd?.name) groupName = gd.name;
+        } catch {}
+        registerGroup(config, threadId, { name: groupName });
+        config = loadConfig();
+      } else {
+        return;
+      }
+    }
     if (!isGroupSenderAllowed(config, threadId, senderId)) return;
   } else {
     if (!hasOwner(config)) {
@@ -206,28 +328,30 @@ async function handleMessage(message) {
     }
   }
 
-  // Parse content
-  let text = '';
-  let mediaPath = null;
-  const content = data.content;
+  // Determine mention and mode for groups
+  const mentioned = isGroup ? isBotMentioned(data) : false;
+  const groupMode = isGroup ? getGroupMode(config, threadId) : null;
 
-  if (typeof content === 'string') {
-    text = content;
-  } else if (content && typeof content === 'object') {
-    if (content.href) {
-      text = `[sent a link: ${content.href}]`;
-    } else if (content.title) {
-      text = `[attachment: ${content.title}]`;
-    } else {
-      text = JSON.stringify(content);
-    }
+  // Track @mention timestamps for look-back window (attachments after @mention)
+  if (isGroup && mentioned) {
+    recentMentions.set(`${threadId}:${senderId}`, Date.now());
   }
+  const inMentionWindow = isGroup && !mentioned && groupMode === 'mention'
+    && recentMentions.has(`${threadId}:${senderId}`)
+    && (Date.now() - recentMentions.get(`${threadId}:${senderId}`)) < MENTION_WINDOW_MS;
 
-  if (!text && !mediaPath) {
-    text = '[unsupported message type]';
-  }
+  // In mention mode: forward @mentioned messages + messages within look-back window
+  // In smart mode: always forward but defer downloads when not @mentioned
+  const shouldForward = !isGroup || groupMode === 'smart' || mentioned || inMentionWindow;
+  const smartNoMention = isGroup && groupMode === 'smart' && !mentioned;
+  const shouldDownload = config.features?.download_media !== false && !smartNoMention;
 
-  // Log entry
+  const { text, mediaPath, mediaMetadata } = await parseContent(
+    data.content,
+    { shouldDownload }
+  );
+
+  // Always log for context history
   const logEntry = {
     timestamp: new Date().toISOString(),
     message_id: messageId,
@@ -239,9 +363,17 @@ async function handleMessage(message) {
   ensureReplay(threadId, config);
   logAndRecord(threadId, logEntry, config);
 
+  if (!shouldForward) {
+    console.log(`[zalo-personal] Group ${threadId} mention-mode: no @mention, logged only`);
+    return;
+  }
+
   const endpoint = buildEndpoint(threadId, { messageId, threadType });
   const correlationId = `${threadId}:${messageId}`;
-  startTyping(threadId, correlationId, threadType);
+
+  if (!smartNoMention) {
+    startTyping(threadId, correlationId, threadType);
+  }
 
   // Build C4 message
   let groupName = null;
@@ -253,19 +385,68 @@ async function handleMessage(message) {
     contextMessages = getHistory(threadId, messageId, config);
   }
 
+  // In smart mode without @mention, append metadata instead of file path
+  let displayText = text;
+  if (smartNoMention && mediaMetadata) {
+    displayText = text + '\n' + mediaMetadata;
+  }
+
   const msg = formatMessage({
     chatType: isGroup ? 'group' : 'dm',
     groupName,
     userName,
-    text,
+    text: displayText,
     contextMessages: isGroup ? contextMessages : null,
-    mediaPath
+    mediaPath: smartNoMention ? null : mediaPath,
+    smartHint: smartNoMention
   });
 
   sendToC4('zalo-personal', endpoint, msg, async (errMsg) => {
     stopTyping(correlationId);
     await api.sendMessage(errMsg, threadId, threadType).catch(() => {});
   });
+}
+
+// ============================================================
+// Reaction handler
+// ============================================================
+
+async function handleReaction(reaction) {
+  if (reaction.isSelf) return;
+  config = loadConfig();
+
+  const data = reaction.data;
+  const threadId = reaction.threadId;
+  const senderId = data.uidFrom;
+  const isGroup = reaction.isGroup;
+
+  if (isGroup) {
+    if (!isGroupAllowed(config, threadId)) return;
+  } else {
+    if (!isDmAllowed(config, senderId)) return;
+  }
+
+  const userName = data.dName || await getUserName(senderId);
+  const reactionContent = data.content;
+  const rIcon = reactionContent?.rIcon || '';
+  const isRemoved = rIcon === '' || reactionContent?.rType === -1;
+
+  const text = isRemoved ? '[removed reaction]' : `[reacted ${rIcon}]`;
+  const endpoint = buildEndpoint(threadId, {
+    messageId: `react:${Date.now()}`,
+    threadType: isGroup ? ThreadType.Group : ThreadType.User,
+  });
+
+  const msg = formatMessage({
+    chatType: isGroup ? 'group' : 'dm',
+    groupName: isGroup ? (getGroupConfig(config, threadId)?.name || threadId) : null,
+    userName,
+    text,
+    contextMessages: null,
+    mediaPath: null,
+  });
+
+  sendToC4('zalo-personal', endpoint, msg);
 }
 
 // ============================================================
@@ -428,14 +609,80 @@ function startInternalServer() {
           const threadType = action.threadType === 'group' ? ThreadType.Group : ThreadType.User;
 
           if (action.type === 'text') {
-            const content = action.quote
-              ? { msg: action.text, quote: undefined }
-              : action.text;
-            await api.sendMessage(content, chatId, threadType);
+            let quoteObj = null;
+            if (action.quote) {
+              if (typeof action.quote === 'object' && action.quote.msgId) {
+                quoteObj = action.quote;
+              } else {
+                const cached = messageCache.get(String(action.quote));
+                if (cached) quoteObj = cached;
+              }
+            }
+            if (quoteObj) {
+              try {
+                await api.sendMessage({ msg: action.text, quote: quoteObj }, chatId, threadType);
+              } catch (quoteErr) {
+                console.warn(`[zalo-personal] Quote-reply failed (${quoteErr.message}), falling back to plain text`);
+                await api.sendMessage(action.text, chatId, threadType);
+              }
+            } else {
+              await api.sendMessage(action.text, chatId, threadType);
+            }
             res.writeHead(200).end(JSON.stringify({ ok: true }));
           } else if (action.type === 'attachment') {
-            await api.uploadAttachment(action.filePath, chatId, threadType);
+            await api.sendMessage({ msg: '', attachments: [action.filePath] }, chatId, threadType);
             res.writeHead(200).end(JSON.stringify({ ok: true }));
+          } else if (action.type === 'reaction') {
+            const reactionMap = {
+              'heart': Reactions.HEART, '❤️': Reactions.HEART, '❤': Reactions.HEART,
+              'like': Reactions.LIKE, '👍': Reactions.LIKE,
+              'haha': Reactions.HAHA, '😆': Reactions.HAHA,
+              'wow': Reactions.WOW, '😮': Reactions.WOW,
+              'cry': Reactions.CRY, '😢': Reactions.CRY,
+              'angry': Reactions.ANGRY, '😠': Reactions.ANGRY,
+            };
+            const icon = reactionMap[(action.icon || '').toLowerCase()] || reactionMap[action.icon] || Reactions.HEART;
+            await api.addReaction(icon, { data: { msgId: action.msgId, cliMsgId: action.cliMsgId }, threadId: chatId, type: threadType });
+            res.writeHead(200).end(JSON.stringify({ ok: true }));
+          } else if (action.type === 'seen') {
+            await api.sendSeenEvent(action.messages, threadType);
+            res.writeHead(200).end(JSON.stringify({ ok: true }));
+          } else if (action.type === 'delivered') {
+            await api.sendDeliveredEvent(action.isSeen || false, action.messages, threadType);
+            res.writeHead(200).end(JSON.stringify({ ok: true }));
+          } else if (action.type === 'link') {
+            await api.sendLink({ link: action.url, msg: action.title || '' }, chatId, threadType);
+            res.writeHead(200).end(JSON.stringify({ ok: true }));
+          } else if (action.type === 'voice') {
+            await api.sendVoice({ voiceUrl: action.voiceUrl }, chatId, threadType);
+            res.writeHead(200).end(JSON.stringify({ ok: true }));
+          } else if (action.type === 'fetchAccountInfo') {
+            const info = await api.fetchAccountInfo();
+            res.writeHead(200).end(JSON.stringify({ ok: true, data: info }));
+          } else if (action.type === 'getAllFriends') {
+            const friends = await api.getAllFriends();
+            res.writeHead(200).end(JSON.stringify({ ok: true, data: friends }));
+          } else if (action.type === 'getAllGroups') {
+            const groups = await api.getAllGroups();
+            res.writeHead(200).end(JSON.stringify({ ok: true, data: groups }));
+          } else if (action.type === 'getGroupInfo') {
+            const info = await api.getGroupInfo(action.groupIds || [chatId]);
+            res.writeHead(200).end(JSON.stringify({ ok: true, data: info }));
+          } else if (action.type === 'getGroupMembersInfo') {
+            const info = await api.getGroupMembersInfo(action.memberIds);
+            res.writeHead(200).end(JSON.stringify({ ok: true, data: info }));
+          } else if (action.type === 'sendSticker') {
+            await api.sendSticker(
+              { id: action.stickerId, cateId: action.cateId, type: action.stickerType || 2 },
+              chatId, threadType
+            );
+            res.writeHead(200).end(JSON.stringify({ ok: true }));
+          } else if (action.type === 'searchSticker') {
+            const result = await api.searchSticker(action.keyword || 'hello');
+            res.writeHead(200).end(JSON.stringify({ ok: true, data: result }));
+          } else if (action.type === 'getStickers') {
+            const result = await api.getStickers(action.stickerType || 7);
+            res.writeHead(200).end(JSON.stringify({ ok: true, data: result }));
           } else {
             res.writeHead(400).end('unknown action type');
           }
@@ -513,6 +760,12 @@ async function main() {
   api.listener.on('message', (message) => {
     handleMessage(message).catch(err => {
       console.error(`[zalo-personal] Message handler error: ${err.message}`);
+    });
+  });
+
+  api.listener.on('reaction', (reaction) => {
+    handleReaction(reaction).catch(err => {
+      console.error(`[zalo-personal] Reaction handler error: ${err.message}`);
     });
   });
 
