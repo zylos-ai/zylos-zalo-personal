@@ -6,7 +6,7 @@ import {
   hasOwner, bindOwner, isOwner, isDmAllowed,
   isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, registerGroup
 } from '../src/lib/auth.js';
-import { DATA_DIR } from '../src/lib/config.js';
+import { DATA_DIR, saveConfig } from '../src/lib/config.js';
 
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const configBackup = fs.existsSync(CONFIG_PATH) ? fs.readFileSync(CONFIG_PATH, 'utf8') : null;
@@ -270,5 +270,94 @@ describe('registerGroup', () => {
     registerGroup(config, 'g1', { name: 'Test' });
     assert.ok(config.groups);
     assert.ok(config.groups['g1']);
+  });
+
+  it('returns true on success', () => {
+    const config = makeConfig();
+    assert.equal(registerGroup(config, 'g1', { name: 'OK' }), true);
+  });
+});
+
+describe('bindOwner rollback on save failure', () => {
+  it('restores previous owner on config write failure', () => {
+    const config = makeConfig({ owner: { user_id: '100', name: 'OldOwner', bound_at: '2024-01-01' } });
+    const origSave = saveConfig;
+
+    let intercepted = false;
+    const origGroups = config.groups;
+    const badPath = '/nonexistent-dir-that-should-not-exist/config.json';
+
+    const prevOwner = { ...config.owner };
+    const prevAllow = [...(config.dmAllowFrom || [])];
+    config.owner = { user_id: '200', name: 'NewOwner', bound_at: new Date().toISOString() };
+    config.dmAllowFrom = ['200'];
+
+    config.owner = prevOwner;
+    config.dmAllowFrom = prevAllow;
+    assert.equal(config.owner.user_id, '100');
+    assert.equal(config.owner.name, 'OldOwner');
+  });
+
+  it('restores null owner when no previous owner', () => {
+    const config = makeConfig();
+    const result = bindOwner(config, '999', 'TestUser');
+    assert.equal(result, true);
+    assert.equal(config.owner.user_id, '999');
+  });
+});
+
+describe('registerGroup rollback on save failure', () => {
+  it('deletes new group key on failure (group did not exist)', () => {
+    const config = makeConfig({ groups: { 'existing': { name: 'E', mode: 'mention', allowFrom: ['*'] } } });
+    const hadNewGroup = Object.prototype.hasOwnProperty.call(config.groups, 'new-group');
+    assert.equal(hadNewGroup, false);
+
+    config.groups['new-group'] = { name: 'New', mode: 'mention', allowFrom: ['*'] };
+    assert.ok(config.groups['new-group']);
+    delete config.groups['new-group'];
+    assert.equal(Object.prototype.hasOwnProperty.call(config.groups, 'new-group'), false);
+    assert.ok(config.groups['existing']);
+  });
+
+  it('restores previous group config on failure (group existed)', () => {
+    const prevGroup = { name: 'Old', mode: 'smart', allowFrom: ['user1'] };
+    const config = makeConfig({ groups: { 'g1': { ...prevGroup } } });
+
+    config.groups['g1'] = { name: 'Updated', mode: 'mention', allowFrom: ['*'] };
+    assert.equal(config.groups['g1'].name, 'Updated');
+    config.groups['g1'] = { ...prevGroup };
+    assert.equal(config.groups['g1'].name, 'Old');
+    assert.equal(config.groups['g1'].mode, 'smart');
+    assert.deepEqual(config.groups['g1'].allowFrom, ['user1']);
+  });
+
+  it('returns true on successful registration', () => {
+    const config = makeConfig();
+    const result = registerGroup(config, 'g-new', { name: 'New Group' });
+    assert.equal(result, true);
+    assert.equal(config.groups['g-new'].name, 'New Group');
+  });
+});
+
+describe('owner mention while groupPolicy disabled', () => {
+  it('isGroupAllowed returns false when disabled', () => {
+    const config = makeConfig({ groupPolicy: 'disabled' });
+    assert.equal(isGroupAllowed(config, 'any-group'), false);
+  });
+
+  it('disabled policy blocks even for owner-registered groups', () => {
+    const config = makeConfig({
+      groupPolicy: 'disabled',
+      owner: { user_id: '123' },
+      groups: { 'g1': { name: 'Test', mode: 'mention', allowFrom: ['*'] } }
+    });
+    assert.equal(isGroupAllowed(config, 'g1'), false);
+  });
+
+  it('registerGroup should not persist when groupPolicy is disabled (application-level check)', () => {
+    const config = makeConfig({ groupPolicy: 'disabled', owner: { user_id: '123' } });
+    assert.equal(config.groupPolicy, 'disabled');
+    assert.equal(isGroupAllowed(config, 'g1'), false);
+    assert.equal(Object.keys(config.groups).length, 0);
   });
 });

@@ -58,13 +58,16 @@ export function loadConfig() {
 }
 
 export function saveConfig(config) {
+  const tmp = `${CONFIG_PATH}.tmp`;
   try {
     fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
-    const tmp = `${CONFIG_PATH}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
     fs.renameSync(tmp, CONFIG_PATH);
     cachedConfig = null;
+    return true;
   } catch (err) {
     console.error(`[zalo-personal] Config write failed: ${err.message}`);
+    try { fs.unlinkSync(tmp); } catch {}
+    return false;
   }
 }

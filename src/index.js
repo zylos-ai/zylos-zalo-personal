@@ -26,6 +26,9 @@ import {
 import {
   logAndRecord, ensureReplay, getHistory, formatMessage
 } from './lib/context.js';
+import {
+  isPrivateIp, isAllowedDownloadHost, isIpLikeHostname, validateUrlSyntax
+} from './lib/url-validator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -272,7 +275,9 @@ async function parseContent(content, { shouldDownload }) {
         if (buf) {
           const ext = imgUrl.includes('.png') ? 'png' : 'jpg';
           const imgPath = path.join(MEDIA_DIR, `img_${Date.now()}.${ext}`);
-          fs.writeFileSync(imgPath, buf);
+          const tmpImg = `${imgPath}.tmp`;
+          fs.writeFileSync(tmpImg, buf, { mode: 0o600 });
+          fs.renameSync(tmpImg, imgPath);
           mediaPath = imgPath;
           text = content.desc || content.description || content.title || '[sent an image]';
         } else {
@@ -305,7 +310,9 @@ async function parseContent(content, { shouldDownload }) {
         const filePath = path.join(MEDIA_DIR, safeName);
         const buf = await downloadUrl(content.href);
         if (buf) {
-          fs.writeFileSync(filePath, buf);
+          const tmpFile = `${filePath}.tmp`;
+          fs.writeFileSync(tmpFile, buf, { mode: 0o600 });
+          fs.renameSync(tmpFile, filePath);
           mediaPath = filePath;
           text = isImage ? (content.desc || content.description || content.title || '[sent an image]') : `[sent a file: ${content.title || dlName}]`;
         } else {
@@ -331,30 +338,11 @@ async function parseContent(content, { shouldDownload }) {
 const MAX_DOWNLOAD_BYTES = (config.features?.max_download_mb || 50) * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
-const ALLOWED_DOWNLOAD_HOSTS = [
-  /\.zdn\.vn$/i, /\.zadn\.vn$/i, /\.dlfl\.vn$/i, /\.zaloapp\.com$/i,
-  /\.zalo\.me$/i, /\.zalo\.vn$/i,
-];
-const PRIVATE_IP_RANGES = [
-  /^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./,
-  /^0\./, /^169\.254\./, /^::1$/, /^fc00:/i, /^fe80:/i, /^fd/i,
-];
-
-function isPrivateIp(ip) {
-  return PRIVATE_IP_RANGES.some(re => re.test(ip));
-}
-
-function isAllowedDownloadHost(hostname) {
-  return ALLOWED_DOWNLOAD_HOSTS.some(re => re.test(hostname));
-}
-
 async function validateDownloadUrl(url) {
-  let parsed;
-  try { parsed = new URL(url); } catch { return false; }
-  if (parsed.protocol !== 'https:') return false;
-  if (!isAllowedDownloadHost(parsed.hostname)) return false;
+  const check = validateUrlSyntax(url);
+  if (!check.valid) return false;
   try {
-    const { address } = await dns.lookup(parsed.hostname);
+    const { address } = await dns.lookup(check.hostname);
     if (isPrivateIp(address)) return false;
   } catch { return false; }
   return true;
@@ -428,8 +416,8 @@ async function handleMessage(message) {
 
   // Access control
   if (isGroup) {
+    if (config.groupPolicy === 'disabled') return;
     if (!isGroupAllowed(config, threadId)) {
-      // Auto-register if owner @mentions the bot in an unknown group
       if (isOwner(config, senderId) && isBotMentioned(data)) {
         let groupName = threadId;
         try {
@@ -437,7 +425,7 @@ async function handleMessage(message) {
           const gd = info?.gridInfoMap?.[threadId];
           if (gd?.name) groupName = gd.name;
         } catch {}
-        registerGroup(config, threadId, { name: groupName });
+        if (!registerGroup(config, threadId, { name: groupName })) return;
         config = loadConfig();
       } else {
         return;
@@ -446,8 +434,9 @@ async function handleMessage(message) {
     if (!isGroupSenderAllowed(config, threadId, senderId)) return;
   } else {
     if (!hasOwner(config)) {
-      bindOwner(config, senderId, userName);
-      await api.sendMessage('You are now the admin of this bot.', threadId, threadType).catch(() => {});
+      if (bindOwner(config, senderId, userName)) {
+        await api.sendMessage('You are now the admin of this bot.', threadId, threadType).catch(() => {});
+      }
       return;
     }
     if (!isDmAllowed(config, senderId)) {
@@ -620,7 +609,9 @@ function startKeepAlive() {
 // ============================================================
 
 function saveCredentials(credentials) {
-  fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(credentials, null, 2), { mode: 0o600 });
+  const tmp = `${CREDENTIALS_PATH}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(credentials, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, CREDENTIALS_PATH);
   console.log('[zalo-personal] Credentials saved');
 }
 
@@ -727,10 +718,12 @@ function startInternalServer() {
   const internalToken = getOrCreateInternalToken();
 
   internalServer = http.createServer((req, res) => {
-    if (req.method === 'POST' && req.url === '/internal/record-outgoing') {
+    if (req.url.startsWith('/internal/')) {
       const token = req.headers['x-internal-token'];
       if (!timingSafeTokenEqual(token, internalToken)) { res.writeHead(403).end('forbidden'); return; }
+    }
 
+    if (req.method === 'POST' && req.url === '/internal/record-outgoing') {
       const chunks = [];
       let size = 0;
       req.on('data', chunk => {
@@ -757,9 +750,6 @@ function startInternalServer() {
     }
 
     if (req.method === 'POST' && req.url === '/internal/send') {
-      const token = req.headers['x-internal-token'];
-      if (!timingSafeTokenEqual(token, internalToken)) { res.writeHead(403).end('forbidden'); return; }
-
       const chunks = [];
       let size = 0;
       req.on('data', chunk => {
@@ -880,8 +870,6 @@ function startInternalServer() {
     }
 
     if (req.method === 'POST' && req.url === '/internal/clear-thinking') {
-      const token = req.headers['x-internal-token'];
-      if (!timingSafeTokenEqual(token, internalToken)) { res.writeHead(403).end('forbidden'); return; }
       const chunks = [];
       let size = 0;
       req.on('data', chunk => {

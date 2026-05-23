@@ -5,6 +5,9 @@ export function hasOwner(config) {
 }
 
 export function bindOwner(config, userId, userName) {
+  const prevOwner = config.owner ? { ...config.owner } : { user_id: null, name: null, bound_at: null };
+  const prevDmAllowFrom = Array.isArray(config.dmAllowFrom) ? [...config.dmAllowFrom] : [];
+
   config.owner = {
     user_id: String(userId),
     name: userName || null,
@@ -14,8 +17,16 @@ export function bindOwner(config, userId, userName) {
   if (!config.dmAllowFrom.includes(String(userId))) {
     config.dmAllowFrom.push(String(userId));
   }
-  saveConfig(config);
+
+  if (!saveConfig(config)) {
+    config.owner = prevOwner;
+    config.dmAllowFrom = prevDmAllowFrom;
+    console.error(`[zalo-personal] Owner binding rolled back due to save failure`);
+    return false;
+  }
+
   console.log(`[zalo-personal] Owner bound: ${userName || userId}`);
+  return true;
 }
 
 export function isOwner(config, userId) {
@@ -58,11 +69,26 @@ export function getGroupMode(config, groupId) {
 
 export function registerGroup(config, groupId, { name, mode } = {}) {
   if (!config.groups) config.groups = {};
-  config.groups[String(groupId)] = {
-    name: name || String(groupId),
+  const key = String(groupId);
+  const hadGroup = Object.prototype.hasOwnProperty.call(config.groups, key);
+  const prevGroup = hadGroup ? { ...config.groups[key] } : undefined;
+
+  config.groups[key] = {
+    name: name || key,
     mode: mode || 'mention',
     allowFrom: ['*']
   };
-  saveConfig(config);
+
+  if (!saveConfig(config)) {
+    if (hadGroup) {
+      config.groups[key] = prevGroup;
+    } else {
+      delete config.groups[key];
+    }
+    console.error(`[zalo-personal] Group registration rolled back due to save failure`);
+    return false;
+  }
+
   console.log(`[zalo-personal] Auto-registered group ${groupId} (${name || 'unnamed'}) in ${mode || 'mention'} mode`);
+  return true;
 }

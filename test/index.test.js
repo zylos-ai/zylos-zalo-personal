@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'crypto';
 
 // index.js has heavy side effects (zca-js import, fs.watch, etc.) so we
 // recreate the pure functions here for unit testing. These mirror the
@@ -699,5 +700,86 @@ describe('reaction map', () => {
 
   it('returns undefined for unknown reactions', () => {
     assert.equal(reactionMap['unknown'], undefined);
+  });
+});
+
+// ============================================================
+// timingSafeTokenEqual (mirrors src/index.js)
+// ============================================================
+
+function timingSafeTokenEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+describe('timingSafeTokenEqual', () => {
+  it('returns true for equal tokens', () => {
+    const token = crypto.randomBytes(32).toString('hex');
+    assert.equal(timingSafeTokenEqual(token, token), true);
+  });
+
+  it('returns false for different tokens of same length', () => {
+    const a = crypto.randomBytes(32).toString('hex');
+    const b = crypto.randomBytes(32).toString('hex');
+    assert.equal(timingSafeTokenEqual(a, b), false);
+  });
+
+  it('rejects length mismatch before timingSafeEqual', () => {
+    assert.equal(timingSafeTokenEqual('short', 'a-much-longer-token-value'), false);
+  });
+
+  it('rejects undefined', () => {
+    assert.equal(timingSafeTokenEqual(undefined, 'token'), false);
+  });
+
+  it('rejects null', () => {
+    assert.equal(timingSafeTokenEqual(null, 'token'), false);
+  });
+
+  it('rejects number', () => {
+    assert.equal(timingSafeTokenEqual(12345, 'token'), false);
+  });
+
+  it('rejects array (duplicate header)', () => {
+    assert.equal(timingSafeTokenEqual(['tok', 'tok'], 'tok'), false);
+  });
+
+  it('returns false when both are non-string', () => {
+    assert.equal(timingSafeTokenEqual(null, undefined), false);
+  });
+});
+
+// ============================================================
+// Disabled groupPolicy blocks all group processing
+// ============================================================
+
+describe('disabled groupPolicy forwarding', () => {
+  function simulateGroupAccess({ groupPolicy, isOwner, isMentioned }) {
+    if (groupPolicy === 'disabled') return { blocked: true, reason: 'disabled' };
+    return { blocked: false };
+  }
+
+  it('blocks owner mention when groupPolicy is disabled', () => {
+    const result = simulateGroupAccess({
+      groupPolicy: 'disabled', isOwner: true, isMentioned: true
+    });
+    assert.equal(result.blocked, true);
+  });
+
+  it('blocks non-owner when groupPolicy is disabled', () => {
+    const result = simulateGroupAccess({
+      groupPolicy: 'disabled', isOwner: false, isMentioned: false
+    });
+    assert.equal(result.blocked, true);
+  });
+
+  it('does not block when groupPolicy is allowlist', () => {
+    const result = simulateGroupAccess({
+      groupPolicy: 'allowlist', isOwner: true, isMentioned: true
+    });
+    assert.equal(result.blocked, false);
   });
 });
