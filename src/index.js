@@ -40,6 +40,18 @@ fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(MEDIA_DIR, { recursive: true, mode: 0o700 });
 
 let config = loadConfig();
+
+function repairPermissions() {
+  const configPath = path.join(DATA_DIR, 'config.json');
+  try { fs.chmodSync(DATA_DIR, 0o700); } catch {}
+  try { if (fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600); } catch {}
+  for (const sub of ['logs', 'media', 'typing', 'sessions']) {
+    try { fs.chmodSync(path.join(DATA_DIR, sub), 0o700); } catch {}
+  }
+  try { if (fs.existsSync(CREDENTIALS_PATH)) fs.chmodSync(CREDENTIALS_PATH, 0o600); } catch {}
+}
+repairPermissions();
+
 let api = null;
 let ownId = null;
 let stopped = false;
@@ -82,7 +94,7 @@ function sendToC4(source, endpoint, content, onReject, onFinalFailure) {
 
   execC4(source, endpoint, content, (error, stdout) => {
     if (!error) {
-      console.log(`[zalo-personal] Sent to C4: ${content.substring(0, 60)}...`);
+      console.log(`[zalo-personal] Sent to C4: ${content.length > 60 ? content.substring(0, 60) + '...' : content}`);
       return;
     }
     const response = parseC4Response(stdout);
@@ -185,12 +197,16 @@ try {
 // Endpoint builder
 // ============================================================
 
+function safeId(str) {
+  return String(str).replace(/[^a-zA-Z0-9_:-]/g, '_').substring(0, 200);
+}
+
 function buildEndpoint(threadId, { messageId, threadType } = {}) {
   let endpoint = String(threadId);
   const typeStr = threadType === ThreadType.Group ? 'group' : 'dm';
   if (messageId) {
-    const correlationId = `${threadId}:${messageId}`;
-    endpoint += `|msg:${messageId}|req:${correlationId}|type:${typeStr}`;
+    const correlationId = safeId(`${threadId}:${messageId}`);
+    endpoint += `|msg:${safeId(messageId)}|req:${correlationId}|type:${typeStr}`;
   }
   return endpoint;
 }
@@ -335,7 +351,6 @@ async function parseContent(content, { shouldDownload }) {
   return { text, mediaPath, mediaMetadata };
 }
 
-const MAX_DOWNLOAD_BYTES = (config.features?.max_download_mb || 50) * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
 async function validateDownloadUrl(url) {
@@ -356,7 +371,7 @@ async function downloadUrl(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
   try {
-    // redirect: 'manual' to validate each hop
+    const maxBytes = (config.features?.max_download_mb || 50) * 1024 * 1024;
     let currentUrl = url;
     let redirects = 0;
     const MAX_REDIRECTS = 5;
@@ -379,17 +394,20 @@ async function downloadUrl(url) {
     if (redirects > MAX_REDIRECTS) return null;
     if (!resp.ok) return null;
     const contentType = resp.headers.get('content-type') || '';
-    if (!contentType.startsWith('image/') && !contentType.startsWith('application/octet-stream') &&
-        !contentType.startsWith('video/') && !contentType.startsWith('audio/')) {
+    const allowedTypes = ['image/', 'application/octet-stream', 'video/', 'audio/',
+      'application/pdf', 'application/zip', 'application/x-zip-compressed',
+      'application/msword', 'application/vnd.openxmlformats-officedocument.',
+      'text/plain'];
+    if (!allowedTypes.some(t => contentType.startsWith(t))) {
       return null;
     }
     const contentLength = parseInt(resp.headers.get('content-length') || '0', 10);
-    if (contentLength > MAX_DOWNLOAD_BYTES) return null;
+    if (contentLength > maxBytes) return null;
     const chunks = [];
     let received = 0;
     for await (const chunk of resp.body) {
       received += chunk.length;
-      if (received > MAX_DOWNLOAD_BYTES) return null;
+      if (received > maxBytes) return null;
       chunks.push(chunk);
     }
     return Buffer.concat(chunks);
@@ -728,7 +746,7 @@ function startInternalServer() {
       let size = 0;
       req.on('data', chunk => {
         size += chunk.length;
-        if (size > 64 * 1024) { req.destroy(); return; }
+        if (size > 64 * 1024) { res.writeHead(413).end('payload too large'); req.destroy(); return; }
         chunks.push(chunk);
       });
       req.on('end', () => {
@@ -754,7 +772,7 @@ function startInternalServer() {
       let size = 0;
       req.on('data', chunk => {
         size += chunk.length;
-        if (size > 256 * 1024) { req.destroy(); return; }
+        if (size > 256 * 1024) { res.writeHead(413).end('payload too large'); req.destroy(); return; }
         chunks.push(chunk);
       });
       req.on('end', async () => {
@@ -874,7 +892,7 @@ function startInternalServer() {
       let size = 0;
       req.on('data', chunk => {
         size += chunk.length;
-        if (size > 4096) { req.destroy(); return; }
+        if (size > 4096) { res.writeHead(413).end('payload too large'); req.destroy(); return; }
         chunks.push(chunk);
       });
       req.on('end', async () => {
@@ -945,7 +963,9 @@ function runCleanup() {
     for (const file of fs.readdirSync(MEDIA_DIR)) {
       try {
         const fp = path.join(MEDIA_DIR, file);
-        if (now - fs.statSync(fp).mtimeMs > MEDIA_MAX_AGE_MS) fs.unlinkSync(fp);
+        const stat = fs.statSync(fp);
+        if (stat.isDirectory()) continue;
+        if (now - stat.mtimeMs > MEDIA_MAX_AGE_MS) fs.unlinkSync(fp);
       } catch {}
     }
   } catch {}
@@ -964,7 +984,7 @@ function runCleanup() {
         let content = buf.toString('utf-8');
         const nl = content.indexOf('\n');
         if (nl >= 0) content = content.substring(nl + 1);
-        fs.writeFileSync(fp, content);
+        fs.writeFileSync(fp, content, { mode: 0o600 });
         console.log(`[zalo-personal] Truncated log ${file}: ${(stat.size / 1024).toFixed(0)}KB → ${(content.length / 1024).toFixed(0)}KB`);
       } catch {}
     }
@@ -979,7 +999,7 @@ runCleanup();
 // ============================================================
 
 async function main() {
-  console.log('[zalo-personal] Starting zylos-zalo-personal v0.1.0...');
+  console.log('[zalo-personal] Starting zylos-zalo-personal v0.1.1...');
   console.log(`[zalo-personal] Data directory: ${DATA_DIR}`);
 
   if (!config.enabled) {

@@ -1,0 +1,83 @@
+# zylos-zalo-personal
+
+Zalo personal account communication channel for Zylos Agent (unofficial, via zca-js).
+
+Uses a real Zalo account instead of the official Bot Platform API. Unlocks capabilities the Bot Platform cannot provide: group chats, file send/receive, reactions, read receipts, typing indicators, message delete/recall, mentions, and friend/group management.
+
+## Requirements
+
+- Node.js >= 20
+- Zalo mobile app (for QR code authentication)
+- Active Zalo account
+
+## Installation
+
+```bash
+zylos add zylos-ai/zylos-zalo-personal
+```
+
+## Authentication
+
+On first start, the service generates a QR code at `sessions/qr.png`. Scan it with your Zalo mobile app to authenticate. Credentials are saved and reused on subsequent starts.
+
+**Note:** Only one web session can be active at a time. Running this service prevents simultaneous use of Zalo Web in a browser.
+
+## Configuration
+
+Config file: `~/zylos/components/zalo-personal/config.json`
+
+```json
+{
+  "enabled": true,
+  "dmPolicy": "owner",
+  "dmAllowFrom": [],
+  "groupPolicy": "allowlist",
+  "groups": {},
+  "internal_port": 3463
+}
+```
+
+### Access Control
+
+- **dmPolicy**: `"owner"` (only owner), `"allowlist"` (owner + dmAllowFrom), `"open"` (anyone)
+- **groupPolicy**: `"allowlist"` (only registered groups), `"disabled"` (no groups)
+- **Group modes**: `"mention"` (respond only when @mentioned) or `"smart"` (observe all, respond selectively)
+
+### Group Auto-Registration
+
+When the owner @mentions the bot in an unregistered group, it is automatically registered with `mode: "mention"` and `allowFrom: ["*"]`.
+
+## Capabilities
+
+| Feature | Supported |
+|---------|-----------|
+| Text messages (DM + group) | Yes |
+| Images (send/receive) | Yes |
+| Files (send/receive) | Yes |
+| Stickers (send/receive) | Yes |
+| Reactions (6 types) | Yes |
+| Quote-reply | Yes |
+| Read receipts | Yes |
+| Delivery receipts | Yes |
+| Typing indicators | Yes |
+| Link previews | Yes |
+| Group mention/smart modes | Yes |
+| Voice messages | Send only (requires hosted URL) |
+
+## Important Caveats
+
+- **Unofficial API**: zca-js is a reverse-engineered headless Zalo Web client, not an official API. Zalo can change internal APIs at any time and break this channel without notice.
+- **Account risk**: Using unofficial automation may violate Zalo's Terms of Service and could result in account restrictions.
+- **Session management**: Requires hourly cookie refresh (handled automatically). QR re-login needed if session expires.
+
+## Service
+
+```bash
+pm2 start ecosystem.config.cjs    # Start
+pm2 logs zylos-zalo-personal       # View logs
+pm2 restart zylos-zalo-personal    # Restart
+```
+
+## License
+
+MIT

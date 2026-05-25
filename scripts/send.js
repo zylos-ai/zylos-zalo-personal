@@ -95,12 +95,17 @@ function splitMessage(text, maxLen) {
   return chunks;
 }
 
+function safeCorrelationId(str) {
+  return String(str).replace(/[^a-zA-Z0-9_:-]/g, '_').substring(0, 200);
+}
+
 function markTypingDone(correlationId) {
   if (!correlationId) return;
   try {
     const typingDir = path.join(DATA_DIR, 'typing');
-    fs.mkdirSync(typingDir, { recursive: true });
-    fs.writeFileSync(path.join(typingDir, `${correlationId}.done`), String(Date.now()));
+    fs.mkdirSync(typingDir, { recursive: true, mode: 0o700 });
+    const safeId = safeCorrelationId(correlationId);
+    fs.writeFileSync(path.join(typingDir, `${safeId}.done`), String(Date.now()), { mode: 0o600 });
   } catch {}
 }
 

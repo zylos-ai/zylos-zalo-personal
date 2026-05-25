@@ -1,6 +1,6 @@
 ---
 name: zalo-personal
-version: 0.1.0
+version: 0.1.1
 description: >-
   Zalo personal account communication channel (unofficial, via zca-js).
   Uses a real Zalo account instead of the official Bot Platform API.

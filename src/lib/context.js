@@ -3,10 +3,11 @@ import path from 'path';
 import { DATA_DIR } from './config.js';
 
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
-fs.mkdirSync(LOGS_DIR, { recursive: true });
+fs.mkdirSync(LOGS_DIR, { recursive: true, mode: 0o700 });
 
 const chatHistories = new Map();
 const replayedKeys = new Set();
+const MAX_TRACKED_CHATS = 500;
 
 function escapeXml(str) {
   if (!str) return '';
@@ -41,13 +42,17 @@ export function recordEntry(chatId, entry, config) {
   if (history.length > limit * 2) {
     chatHistories.set(chatId, history.slice(-limit));
   }
+  if (chatHistories.size > MAX_TRACKED_CHATS) {
+    const firstKey = chatHistories.keys().next().value;
+    chatHistories.delete(firstKey);
+  }
 }
 
 export function logAndRecord(chatId, entry, config) {
   chatId = String(chatId);
   const logFile = path.join(LOGS_DIR, logFileName(chatId));
   try {
-    fs.appendFileSync(logFile, JSON.stringify(entry) + '\n');
+    fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
   } catch (err) {
     console.error(`[zalo-personal] Log write failed for ${chatId}: ${err.message}`);
   }
@@ -88,6 +93,10 @@ export function ensureReplay(chatId, config) {
       } catch {}
     }
     replayedKeys.add(chatId);
+    if (replayedKeys.size > MAX_TRACKED_CHATS) {
+      const first = replayedKeys.values().next().value;
+      replayedKeys.delete(first);
+    }
     if (tail.length > 0) {
       console.log(`[zalo-personal] Replayed ${tail.length} log entries for ${chatId}`);
     }
