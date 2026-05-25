@@ -33,14 +33,6 @@ Config file: `~/zylos/components/zalo-personal/config.json`
   "dmAllowFrom": [],
   "groupPolicy": "allowlist",
   "groups": {},
-  "features": {
-    "download_media": true,
-    "max_download_mb": 50
-  },
-  "message": {
-    "context_messages": 5,
-    "textMode": "plain"
-  },
   "internal_port": 3463
 }
 ```
@@ -71,13 +63,6 @@ When the owner @mentions the bot in an unregistered group, it is automatically r
 | Link previews | Yes |
 | Group mention/smart modes | Yes |
 | Voice messages | Send only (requires hosted URL) |
-
-## Security
-
-- **CDN-only media downloads**: Only images from known Zalo CDN hosts (zadn.vn, zdn.vn, dlfl.vn, zaloapp.com) are downloaded. All other URLs are blocked.
-- **SSRF protection**: Private IP ranges (IPv4 and IPv6) are blocked for all outbound requests.
-- **Fail-closed config**: If config.json is missing or corrupted after initial setup, the service refuses to start rather than resetting to defaults.
-- **Automatic cleanup**: Media files older than 7 days and logs over 5MB are rotated automatically.
 
 ## Important Caveats
 
