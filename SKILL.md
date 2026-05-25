@@ -66,7 +66,7 @@ via saved credentials in `~/zylos/components/zalo-personal/sessions/`.
 | Files/PDFs | No | Yes |
 | Stickers | Yes | Yes |
 | Groups | No | Full support |
-| Reactions | No | 11 emoji types |
+| Reactions | No | 6 types |
 | Typing | Basic | Yes |
 | Read receipts | No | Internal API only |
 | Message delete | No | No |
