@@ -2,17 +2,24 @@ import { describe, it, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
-import {
+import os from 'os';
+
+const origHome = process.env.HOME;
+const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zp-auth-test-'));
+const dataDir = path.join(tmpHome, 'zylos/components/zalo-personal');
+fs.mkdirSync(dataDir, { recursive: true });
+fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ enabled: true }));
+process.env.HOME = tmpHome;
+
+const {
   hasOwner, bindOwner, isOwner, isDmAllowed,
   isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, registerGroup
-} from '../src/lib/auth.js';
-import { DATA_DIR, saveConfig } from '../src/lib/config.js';
-
-const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-const configBackup = fs.existsSync(CONFIG_PATH) ? fs.readFileSync(CONFIG_PATH, 'utf8') : null;
+} = await import('../src/lib/auth.js');
+const { DATA_DIR, saveConfig } = await import('../src/lib/config.js');
 
 after(() => {
-  if (configBackup) fs.writeFileSync(CONFIG_PATH, configBackup);
+  process.env.HOME = origHome;
+  fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
 function makeConfig(overrides = {}) {

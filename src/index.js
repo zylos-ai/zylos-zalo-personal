@@ -49,6 +49,14 @@ function repairPermissions() {
     try { fs.chmodSync(path.join(DATA_DIR, sub), 0o700); } catch {}
   }
   try { if (fs.existsSync(CREDENTIALS_PATH)) fs.chmodSync(CREDENTIALS_PATH, 0o600); } catch {}
+  const logsDir = path.join(DATA_DIR, 'logs');
+  try {
+    for (const f of fs.readdirSync(logsDir)) {
+      if (f.endsWith('.jsonl')) {
+        try { fs.chmodSync(path.join(logsDir, f), 0o600); } catch {}
+      }
+    }
+  } catch {}
 }
 repairPermissions();
 
@@ -506,7 +514,7 @@ async function handleMessage(message) {
   }
 
   const endpoint = buildEndpoint(threadId, { messageId, threadType });
-  const correlationId = `${threadId}:${messageId}`;
+  const correlationId = safeId(`${threadId}:${messageId}`);
 
   if (!smartNoMention) {
     startTyping(threadId, correlationId, threadType);

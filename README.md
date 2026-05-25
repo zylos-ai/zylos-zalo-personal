@@ -2,7 +2,7 @@
 
 Zalo personal account communication channel for Zylos Agent (unofficial, via zca-js).
 
-Uses a real Zalo account instead of the official Bot Platform API. Unlocks capabilities the Bot Platform cannot provide: group chats, file send/receive, reactions, read receipts, typing indicators, message delete/recall, mentions, and friend/group management.
+Uses a real Zalo account instead of the official Bot Platform API. Unlocks capabilities the Bot Platform cannot provide: group chats, file send/receive, reactions, typing indicators, mentions, and friend/group management.
 
 ## Requirements
 
@@ -57,8 +57,8 @@ When the owner @mentions the bot in an unregistered group, it is automatically r
 | Stickers (send/receive) | Yes |
 | Reactions (6 types) | Yes |
 | Quote-reply | Yes |
-| Read receipts | Yes |
-| Delivery receipts | Yes |
+| Read receipts | Internal API only |
+| Delivery receipts | Internal API only |
 | Typing indicators | Yes |
 | Link previews | Yes |
 | Group mention/smart modes | Yes |

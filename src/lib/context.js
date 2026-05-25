@@ -66,6 +66,10 @@ export function ensureReplay(chatId, config) {
   const logFile = path.join(LOGS_DIR, logFileName(chatId));
   if (!fs.existsSync(logFile)) {
     replayedKeys.add(chatId);
+    if (replayedKeys.size > MAX_TRACKED_CHATS) {
+      const first = replayedKeys.values().next().value;
+      replayedKeys.delete(first);
+    }
     return;
   }
 
