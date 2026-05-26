@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1 (2026-05-21)
+## [0.1.1] - 2026-05-26
 
 ### Security
 - Harden inbound download URL validation: HTTPS-only, Zalo CDN allowlist, private IP rejection, redirect validation
@@ -24,7 +24,7 @@
 - Media cleanup and log rotation
 - WebSocket health monitoring and keep-alive
 
-## 0.1.0 (2026-05-20)
+## [0.1.0] - 2026-05-20
 
 - Initial release
 - zca-js integration for personal Zalo account

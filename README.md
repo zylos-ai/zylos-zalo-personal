@@ -1,83 +1,110 @@
-# zylos-zalo-personal
+<p align="center">
+  <img src="./assets/logo.png" alt="Zylos" height="120">
+</p>
 
-Zalo personal account communication channel for Zylos Agent (unofficial, via zca-js).
+<h1 align="center">zylos-zalo-personal</h1>
 
-Uses a real Zalo account instead of the official Bot Platform API. Unlocks capabilities the Bot Platform cannot provide: group chats, file send/receive, reactions, typing indicators, mentions, and friend/group management.
+> **Zylos** (/ˈzaɪ.lɒs/ 赛洛丝) — Give your AI a life
 
-## Requirements
+<p align="center">
+  Zalo personal account messaging component for <a href="https://github.com/zylos-ai/zylos-core">Zylos</a> agents.
+</p>
 
-- Node.js >= 20
-- Zalo mobile app (for QR code authentication)
-- Active Zalo account
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node.js"></a>
+  <a href="https://discord.gg/GS2J39EGff"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://x.com/ZylosAI"><img src="https://img.shields.io/badge/X-follow-000000?logo=x&logoColor=white" alt="X"></a>
+  <a href="https://zylos.ai"><img src="https://img.shields.io/badge/website-zylos.ai-blue" alt="Website"></a>
+  <a href="https://coco.xyz"><img src="https://img.shields.io/badge/Built%20by-Coco-orange" alt="Built by Coco"></a>
+</p>
 
-## Installation
+<p align="center">
+  <a href="./README.zh-CN.md">中文</a>
+</p>
+
+---
+
+- **Chat on Zalo** — your AI agent uses a real Zalo account, supporting private and group conversations
+- **Rich media** — send and receive images, files, stickers, reactions, and typing indicators
+- **Smart group monitoring** — automatically follow designated group discussions, no @mention needed
+- **Zero-config start** — first message auto-binds you as owner, no setup wizards
+- **QR code login** — scan once with Zalo mobile, session persists across restarts
+
+> **Note:** This component uses [zca-js](https://github.com/nicejom/zca-js), an unofficial reverse-engineered Zalo Web client — not the official Bot Platform API. See [Important Caveats](#important-caveats) below.
+
+## Getting Started
+
+Tell your Zylos agent:
+
+> "Install the zalo-personal component"
+
+Or use the CLI:
 
 ```bash
 zylos add zylos-ai/zylos-zalo-personal
 ```
 
-## Authentication
+On first start, the service generates a QR code. Scan it with your Zalo mobile app to authenticate. Once connected, message the account on Zalo — the first user to interact becomes the owner.
 
-On first start, the service generates a QR code at `sessions/qr.png`. Scan it with your Zalo mobile app to authenticate. Credentials are saved and reused on subsequent starts.
+## Managing the Bot
 
-**Note:** Only one web session can be active at a time. Running this service prevents simultaneous use of Zalo Web in a browser.
+Just tell your Zylos agent what you need:
 
-## Configuration
+| Task | Example |
+|------|---------|
+| Add user to allowlist | "Add user xxx to zalo-personal allowlist" |
+| Enable smart group | "Set this group to smart mode in zalo-personal" |
+| Change DM policy | "Set zalo-personal DM policy to open" |
+| Check status | "Show zalo-personal bot status" |
+| Restart bot | "Restart zalo-personal" |
+| Upgrade | "Upgrade zalo-personal component" |
+| Uninstall | "Uninstall zalo-personal component" |
 
-Config file: `~/zylos/components/zalo-personal/config.json`
+Or manage via CLI:
 
-```json
-{
-  "enabled": true,
-  "dmPolicy": "owner",
-  "dmAllowFrom": [],
-  "groupPolicy": "allowlist",
-  "groups": {},
-  "internal_port": 3463
-}
+```bash
+zylos upgrade zalo-personal
+zylos uninstall zalo-personal
 ```
 
-### Access Control
+## Group Chat Behavior
 
-- **dmPolicy**: `"owner"` (only owner), `"allowlist"` (owner + dmAllowFrom), `"open"` (anyone)
-- **groupPolicy**: `"allowlist"` (only registered groups), `"open"` (all groups), `"disabled"` (no groups)
-- **Group modes**: `"mention"` (respond only when @mentioned) or `"smart"` (observe all, respond selectively)
-
-### Group Auto-Registration
-
-When the owner @mentions the bot in an unregistered group, it is automatically registered with `mode: "mention"` and `allowFrom: ["*"]`.
-
-## Capabilities
-
-| Feature | Supported |
-|---------|-----------|
-| Text messages (DM + group) | Yes |
-| Images (send/receive) | Yes |
-| Files (send/receive) | Yes |
-| Stickers (send/receive) | Yes |
-| Reactions (6 types) | Yes |
-| Quote-reply | Yes |
-| Read receipts | Internal API only |
-| Delivery receipts | Internal API only |
-| Typing indicators | Yes |
-| Link previews | Yes |
-| Group mention/smart modes | Yes |
-| Voice messages | Send only (requires hosted URL) |
+| Scenario | Bot Response |
+|----------|--------------|
+| Private chat (owner/allowlisted) | Responds via Claude |
+| Smart group message | Receives all messages |
+| @mention in allowed group | Responds with context |
+| Owner @mention in unregistered group | Auto-registers group |
+| `groupPolicy: disabled` | All group messages blocked |
+| Unknown user | Ignored |
 
 ## Important Caveats
 
-- **Unofficial API**: zca-js is a reverse-engineered headless Zalo Web client, not an official API. Zalo can change internal APIs at any time and break this channel without notice.
-- **Account risk**: Using unofficial automation may violate Zalo's Terms of Service and could result in account restrictions.
-- **Session management**: Requires hourly cookie refresh (handled automatically). QR re-login needed if session expires.
+> **Use at your own risk.** This component uses an unofficial API and may result in your Zalo account being restricted or permanently banned. We are not responsible for any account actions taken by Zalo.
 
-## Service
+- **Unofficial API** — zca-js is a reverse-engineered headless Zalo Web client. Zalo can change internal APIs at any time and break this channel without notice.
+- **Account ban risk** — Using unofficial automation violates Zalo's Terms of Service. Your account may be temporarily restricted or permanently banned without warning. Use a secondary account if possible — do not risk your primary account.
+- **Single web session** — Only one Zalo Web session can be active at a time. Running this service disconnects Zalo Web in your browser.
 
-```bash
-pm2 start ecosystem.config.cjs    # Start
-pm2 logs zylos-zalo-personal       # View logs
-pm2 restart zylos-zalo-personal    # Restart
-```
+## Documentation
+
+- [SKILL.md](./SKILL.md) — Component specification
+- [DESIGN.md](./DESIGN.md) — Architecture and design
+- [CHANGELOG.md](./CHANGELOG.md) — Version history
+
+## Contributing
+
+See [Contributing Guide](https://github.com/zylos-ai/.github/blob/main/CONTRIBUTING.md).
+
+## Built by Coco
+
+Zylos is the open-source core of [Coco](https://coco.xyz/) — the AI employee platform.
+
+We built Zylos because we needed it ourselves: reliable infrastructure to keep AI agents running 24/7 on real work. Every component is battle-tested in production at Coco, serving teams that depend on their AI employees every day.
+
+Want a managed experience? [Coco](https://coco.xyz/) gives you a ready-to-work AI employee — persistent memory, multi-channel communication, and skill packages — deployed in 5 minutes.
 
 ## License
 
-MIT
+[MIT](./LICENSE)
