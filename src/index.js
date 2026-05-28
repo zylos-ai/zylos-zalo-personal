@@ -679,7 +679,11 @@ async function authenticate() {
     api = await zalo.loginQR({ qrPath }, (event) => {
       switch (event.type) {
         case LoginQRCallbackEventType.QRCodeGenerated:
-          console.log(`[zalo-personal] QR code saved to: ${qrPath}`);
+          event.actions.saveToFile(qrPath).then(() => {
+            console.log(`[zalo-personal] QR code saved to: ${qrPath}`);
+          }).catch((err) => {
+            console.error(`[zalo-personal] Failed to save QR code: ${err.message}`);
+          });
           console.log(`[zalo-personal] Scan the QR code with your Zalo mobile app`);
           break;
         case LoginQRCallbackEventType.QRCodeExpired:

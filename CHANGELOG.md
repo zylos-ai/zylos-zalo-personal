@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.2] - 2026-05-28
+
+### Fixed
+- QR code file never saved to disk when using callback-based loginQR — zca-js does not auto-save when a callback is provided; added explicit `event.actions.saveToFile(qrPath)` call in the QRCodeGenerated handler. This caused `/internal/qr` to always return 404, making dashboard QR generation time out.
+
 ## [0.1.1] - 2026-05-26
 
 ### Security
