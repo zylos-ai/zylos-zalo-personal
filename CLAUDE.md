@@ -33,7 +33,7 @@ This is a **communication component** for the Zylos agent ecosystem.
 - `src/lib/config.js` — Config loader with defaults
 - `src/lib/context.js` — Group chat context management
 - `src/lib/url-validator.js` — URL validation for media downloads (SSRF prevention)
-- `scripts/send.js` — C4 outbound message interface (text, images, files, stickers, reactions)
+- `scripts/send.js` — C4 outbound message interface (text, images, files, stickers, voice, links, reactions, SKIP)
 - `hooks/` — Lifecycle hooks (configure, post-install, pre-upgrade, post-upgrade)
 - `ecosystem.config.cjs` — PM2 service config (CommonJS required by PM2)
 

@@ -3,10 +3,19 @@
 ## Unreleased
 
 ### Added
+- Add operator doctor diagnostics and the `scripts/admin.js` management CLI.
+- Add `dmPolicy: "pairing"` for owner-approved unknown DMs, plus first-contact DM welcome messages.
+- Send a user-visible Zalo notice when C4 delivery finally fails.
+- Add voice, sticker, and link send prefixes through `scripts/send.js`.
+- Add public directory resolver admin commands for friend/group lookup.
+- Add inbound per-sender rate limiting, session-expiry owner/admin alerts, per-thread C4 dispatch serialization, and inbound read-status auto-trigger support.
 - Surface inbound Zalo recall/delete-for-everyone events to C4 through the `undo` listener.
 - Transcribe inbound voice messages when a safe Zalo voice URL and transcription provider are available.
 - Add opt-in per-group `allowedActions` policies for `/internal/send` group actions.
 - Preserve basic Markdown emphasis and list styling when sending text via Zalo native text styles.
+
+### Fixed
+- Add runtime guards for missing or malformed inbound data, message cache records, and internal service payloads.
 
 ## [0.1.2] - 2026-05-28
 
