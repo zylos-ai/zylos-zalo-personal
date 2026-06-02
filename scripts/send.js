@@ -6,6 +6,9 @@
  *   echo "message" | node scripts/send.js <endpoint_id>
  *   echo "[MEDIA:image]/path/to/image.png" | node scripts/send.js <endpoint_id>
  *   echo "[MEDIA:file]/path/to/file.pdf" | node scripts/send.js <endpoint_id>
+ *   echo "[MEDIA:voice]https://host/clip.aac" | node scripts/send.js <endpoint_id>
+ *   echo "[MEDIA:sticker]<stickerId>[:<cateId>]" | node scripts/send.js <endpoint_id>
+ *   echo "[LINK]https://host/page[|Title]" | node scripts/send.js <endpoint_id>
  *   echo "[SKIP]" | node scripts/send.js <endpoint_id>
  *
  * Reads message from stdin (preferred) or as CLI argument.
@@ -213,6 +216,43 @@ async function main() {
       markTypingDone(correlationId);
       await recordOutgoing(chatId, isImage ? '[sent a photo]' : `[sent a file: ${path.basename(filePath)}]`);
       console.log(`${isImage ? 'Photo' : 'File'} sent successfully`);
+      return;
+    }
+
+    if (message.startsWith('[MEDIA:voice]')) {
+      const voiceUrl = message.substring('[MEDIA:voice]'.length).trim();
+      if (!/^https?:\/\//i.test(voiceUrl)) throw new Error('Voice send requires a public HTTP(S) URL');
+      await clearThinking(correlationId);
+      await sendViaService(chatId, { type: 'voice', voiceUrl, threadType });
+      markTypingDone(correlationId);
+      await recordOutgoing(chatId, '[sent a voice message]');
+      console.log('Voice sent successfully');
+      return;
+    }
+
+    if (message.startsWith('[MEDIA:sticker]')) {
+      const raw = message.substring('[MEDIA:sticker]'.length).trim();
+      const [stickerId, cateId] = raw.split(':');
+      if (!stickerId) throw new Error('Sticker requires an id: [MEDIA:sticker]<stickerId>[:<cateId>]');
+      await clearThinking(correlationId);
+      await sendViaService(chatId, { type: 'sendSticker', stickerId, cateId: cateId || undefined, threadType });
+      markTypingDone(correlationId);
+      await recordOutgoing(chatId, '[sent a sticker]');
+      console.log('Sticker sent successfully');
+      return;
+    }
+
+    if (message.startsWith('[LINK]')) {
+      const raw = message.substring('[LINK]'.length).trim();
+      const pipe = raw.indexOf('|');
+      const link = (pipe === -1 ? raw : raw.slice(0, pipe)).trim();
+      const title = pipe === -1 ? '' : raw.slice(pipe + 1).trim();
+      if (!/^https?:\/\//i.test(link)) throw new Error('Link send requires a public HTTP(S) URL');
+      await clearThinking(correlationId);
+      await sendViaService(chatId, { type: 'link', url: link, title, threadType });
+      markTypingDone(correlationId);
+      await recordOutgoing(chatId, '[sent a link]');
+      console.log('Link sent successfully');
       return;
     }
 
