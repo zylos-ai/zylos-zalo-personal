@@ -3,7 +3,7 @@ import { loadConfig, saveConfig } from './config.js';
 let ownerBindInProgress = false;
 
 export function hasOwner(config) {
-  return config.owner && config.owner.user_id !== null;
+  return config.owner && config.owner.user_id != null;
 }
 
 export function bindOwner(config, userId, userName) {

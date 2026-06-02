@@ -28,7 +28,7 @@ function getHistoryLimit(chatId, config) {
   return gc?.historyLimit || config?.message?.context_messages || 5;
 }
 
-export function recordEntry(chatId, entry, config) {
+function recordEntry(chatId, entry, config) {
   chatId = String(chatId);
   if (!chatHistories.has(chatId)) chatHistories.set(chatId, []);
   const history = chatHistories.get(chatId);

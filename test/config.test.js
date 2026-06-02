@@ -27,7 +27,7 @@ describe('config.js', () => {
 
   beforeEach(async () => {
     dataDir = setupTmpHome();
-    const modulePath = `../src/lib/config.js?t=${Date.now()}`;
+    const modulePath = `../src/lib/config.js?t=${Date.now()}-${Math.random()}`;
     configModule = await import(modulePath);
   });
 
@@ -44,6 +44,7 @@ describe('config.js', () => {
       assert.equal(config.internal_port, 3463);
       assert.equal(config.voiceTranscription, 'auto');
       assert.equal(config.whisperModel, '');
+      assert.equal(config.message.textMode, 'markdown');
       assert.deepEqual(config.dmAllowFrom, []);
       assert.deepEqual(config.groups, {});
       assert.deepEqual(config.features.inbound_rate_limit, { window_ms: 60000, max: 60 });
@@ -70,6 +71,24 @@ describe('config.js', () => {
       assert.equal(config.dmPolicy, 'open');
       assert.equal(config.groupPolicy, 'allowlist');
       assert.equal(config.internal_port, 3463);
+    });
+
+    it('recursively merges nested defaults with partial config', () => {
+      const configPath = path.join(dataDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify({
+        features: {
+          inbound_rate_limit: { max: 12 }
+        },
+        message: {
+          textMode: 'plain'
+        }
+      }));
+      const config = configModule.loadConfig();
+      assert.equal(config.features.download_media, true);
+      assert.deepEqual(config.features.inbound_rate_limit, { window_ms: 60000, max: 12 });
+      assert.deepEqual(config.features.session_alert, { disconnect_grace_ms: 300000, cooldown_ms: 1800000 });
+      assert.equal(config.message.context_messages, 5);
+      assert.equal(config.message.textMode, 'plain');
     });
 
     it('returns defaults on malformed JSON', () => {

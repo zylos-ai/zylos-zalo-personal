@@ -4,14 +4,11 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import http from 'http';
+import { safeId } from '../src/lib/ids.js';
 
 // ============================================================
 // ZP-13: Safe correlation ID
 // ============================================================
-
-function safeId(str) {
-  return String(str).replace(/[^a-zA-Z0-9_:-]/g, '_').substring(0, 200);
-}
 
 describe('safeId (ZP-13: correlation ID sanitization)', () => {
   it('preserves safe characters', () => {

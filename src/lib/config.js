@@ -5,7 +5,7 @@ const HOME = process.env.HOME;
 export const DATA_DIR = path.join(HOME, 'zylos/components/zalo-personal');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 
-function freshDefaults() {
+export function freshDefaults() {
   return {
     enabled: true,
     dmPolicy: 'owner',
@@ -26,7 +26,7 @@ function freshDefaults() {
     },
     message: {
       context_messages: 5,
-      textMode: 'plain'
+      textMode: 'markdown'
     },
     voiceTranscription: 'auto',
     whisperModel: '',
@@ -34,14 +34,14 @@ function freshDefaults() {
   };
 }
 
-function deepMerge(defaults, overrides) {
+export function deepMerge(defaults, overrides) {
   const result = { ...defaults };
   for (const key of Object.keys(overrides)) {
     if (
       overrides[key] && typeof overrides[key] === 'object' && !Array.isArray(overrides[key])
       && defaults[key] && typeof defaults[key] === 'object' && !Array.isArray(defaults[key])
     ) {
-      result[key] = { ...defaults[key], ...overrides[key] };
+      result[key] = deepMerge(defaults[key], overrides[key]);
     } else {
       result[key] = overrides[key];
     }

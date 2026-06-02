@@ -1,35 +1,13 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import { deepMerge, freshDefaults } from '../src/lib/config.js';
 
 const HOME = process.env.HOME;
 const DATA_DIR = path.join(HOME, 'zylos/components/zalo-personal');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 
-const DEFAULT_CONFIG = {
-  enabled: true,
-  dmPolicy: 'owner',
-  dmAllowFrom: [],
-  groupPolicy: 'allowlist',
-  groups: {},
-  features: {
-    download_media: true,
-    inbound_rate_limit: {
-      window_ms: 60 * 1000,
-      max: 60
-    },
-    session_alert: {
-      disconnect_grace_ms: 5 * 60 * 1000,
-      cooldown_ms: 30 * 60 * 1000
-    }
-  },
-  message: {
-    textMode: 'plain'
-  },
-  voiceTranscription: 'auto',
-  whisperModel: '',
-  internal_port: 3463
-};
+const DEFAULT_CONFIG = freshDefaults();
 
 const KEY_MAP = {
   dmpolicy: ['dmPolicy', String],
@@ -109,7 +87,7 @@ try {
   const collected = JSON.parse(raw);
   let config = DEFAULT_CONFIG;
   if (fs.existsSync(CONFIG_PATH)) {
-    config = { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) };
+    config = deepMerge(DEFAULT_CONFIG, JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')));
   }
 
   for (const [name, value] of Object.entries(collected)) {

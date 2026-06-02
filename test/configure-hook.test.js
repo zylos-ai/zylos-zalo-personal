@@ -64,9 +64,20 @@ describe('configure hook', () => {
       ZALO_PERSONAL_INTERNAL_PORT: '4567'
     });
 
-    assert.deepEqual(config.owner, undefined);
+    assert.deepEqual(config.owner, { user_id: null, name: null, bound_at: null });
     assert.deepEqual(config.groups, {});
     assert.equal(config.enabled, true);
     assert.equal(config.internal_port, 4567);
+  });
+
+  it('preserves sibling nested defaults when one nested key is configured', () => {
+    const config = runConfigure({
+      ZALO_PERSONAL_INBOUND_RATE_LIMIT_MAX: '12'
+    });
+
+    assert.deepEqual(config.features.inbound_rate_limit, { window_ms: 60000, max: 12 });
+    assert.deepEqual(config.features.session_alert, { disconnect_grace_ms: 300000, cooldown_ms: 1800000 });
+    assert.equal(config.message.context_messages, 5);
+    assert.equal(config.message.textMode, 'markdown');
   });
 });
