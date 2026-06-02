@@ -21,7 +21,7 @@ import { Zalo, LoginQRCallbackEventType, ThreadType, Reactions } from 'zca-js';
 import { loadConfig, saveConfig, DATA_DIR } from './lib/config.js';
 import {
   hasOwner, bindOwner, isOwner, isDmAllowed,
-  isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, registerGroup
+  isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, isGroupActionAllowed, registerGroup
 } from './lib/auth.js';
 import {
   logAndRecord, ensureReplay, getHistory, formatMessage
@@ -1115,6 +1115,14 @@ function startInternalServer() {
           if (!api) { res.writeHead(503).end('not connected'); return; }
 
           const threadType = action.threadType === 'group' ? ThreadType.Group : ThreadType.User;
+          config = loadConfig();
+          if (threadType === ThreadType.Group && !isGroupActionAllowed(config, chatId, action.type)) {
+            res.writeHead(403).end(JSON.stringify({
+              ok: false,
+              error: `action not allowed for group: ${action.type}`
+            }));
+            return;
+          }
 
           if (action.type === 'text') {
             let quoteObj = null;
