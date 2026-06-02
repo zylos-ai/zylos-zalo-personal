@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.3] - 2026-06-02
 
 ### Security
 - Harden reaction inbound handling with per-sender authorization and rate limiting.
@@ -22,6 +22,10 @@
 
 ### Fixed
 - Add runtime guards for missing or malformed inbound data, message cache records, and internal service payloads.
+- Clean up voice temp files, stale media trees, timestamp caches, and oversized logs without deleting C4-dispatched media before async delivery.
+- Preserve sibling nested config defaults during partial overrides and default outbound text mode to Markdown with `message.textMode: "plain"` as the opt-out.
+- Queue reaction forwarding per thread, use consistent group-name resolution, avoid duplicate reaction request IDs, and tighten owner/pairing edge cases.
+- Remove low-risk unused code paths and consolidate safe correlation ID handling.
 
 ## [0.1.2] - 2026-05-28
 
