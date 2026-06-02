@@ -27,7 +27,7 @@ import {
   logAndRecord, ensureReplay, getHistory, formatMessage
 } from './lib/context.js';
 import {
-  isPrivateIp, isAllowedDownloadHost, isIpLikeHostname, validateUrlSyntax
+  isPrivateIp, isAllowedDownloadHost, isIpLikeHostname, validateUrlSyntax, validatePublicHttpsUrlSyntax
 } from './lib/url-validator.js';
 import { loadSeenDmUsers, sendDmWelcomeIfFirstSeen } from './lib/dm-welcome.js';
 import {
@@ -39,12 +39,14 @@ import {
 } from './lib/undo.js';
 import { getTranscriptionProvider, transcribeAudio } from './lib/transcribe.js';
 import { extractVoiceUrl, isVoiceMessageData, summarizeVoiceContentShape } from './lib/voice.js';
+import { requestPinned } from './lib/pinned-request.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
 const CREDENTIALS_PATH = path.join(SESSIONS_DIR, 'credentials.json');
+const INTERNAL_TOKEN_PATH = path.join(SESSIONS_DIR, '.internal-token');
 
 fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(MEDIA_DIR, { recursive: true, mode: 0o700 });
@@ -60,6 +62,7 @@ function repairPermissions() {
     try { fs.chmodSync(path.join(DATA_DIR, sub), 0o700); } catch {}
   }
   try { if (fs.existsSync(CREDENTIALS_PATH)) fs.chmodSync(CREDENTIALS_PATH, 0o600); } catch {}
+  try { if (fs.existsSync(INTERNAL_TOKEN_PATH)) fs.chmodSync(INTERNAL_TOKEN_PATH, 0o600); } catch {}
   const logsDir = path.join(DATA_DIR, 'logs');
   try {
     for (const f of fs.readdirSync(logsDir)) {
@@ -499,17 +502,38 @@ const DOWNLOAD_TIMEOUT_MS = 30000;
 
 async function validateDownloadUrl(url) {
   const check = validateUrlSyntax(url);
+  if (!check.valid) return null;
+  try {
+    const { address, family } = await dns.lookup(check.hostname);
+    if (isPrivateIp(address)) return null;
+    return { ...check, address, family };
+  } catch { return null; }
+}
+
+async function validatePublicHttpsUrl(url) {
+  const check = validatePublicHttpsUrlSyntax(url);
   if (!check.valid) return false;
   try {
     const { address } = await dns.lookup(check.hostname);
-    if (isPrivateIp(address)) return false;
+    return !isPrivateIp(address);
   } catch { return false; }
-  return true;
+}
+
+function redactUrlForLog(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.href;
+  } catch {
+    return '[invalid url]';
+  }
 }
 
 async function downloadUrl(url) {
-  if (!(await validateDownloadUrl(url))) {
-    console.warn(`[zalo-personal] Download blocked: ${url}`);
+  let pin = await validateDownloadUrl(url);
+  if (!pin) {
+    console.warn(`[zalo-personal] Download blocked: ${redactUrlForLog(url)}`);
     return null;
   }
   const controller = new AbortController();
@@ -521,13 +545,15 @@ async function downloadUrl(url) {
     const MAX_REDIRECTS = 5;
     let resp;
     while (redirects <= MAX_REDIRECTS) {
-      resp = await fetch(currentUrl, { signal: controller.signal, redirect: 'manual' });
-      if ([301, 302, 303, 307, 308].includes(resp.status)) {
-        const location = resp.headers.get('location');
+      resp = await requestPinned(currentUrl, pin, controller.signal);
+      if ([301, 302, 303, 307, 308].includes(resp.statusCode)) {
+        const location = resp.headers.location;
+        resp.resume();
         if (!location) return null;
         currentUrl = new URL(location, currentUrl).href;
-        if (!(await validateDownloadUrl(currentUrl))) {
-          console.warn(`[zalo-personal] Redirect blocked: ${currentUrl}`);
+        pin = await validateDownloadUrl(currentUrl);
+        if (!pin) {
+          console.warn(`[zalo-personal] Redirect blocked: ${redactUrlForLog(currentUrl)}`);
           return null;
         }
         redirects++;
@@ -536,8 +562,8 @@ async function downloadUrl(url) {
       break;
     }
     if (redirects > MAX_REDIRECTS) return null;
-    if (!resp.ok) return null;
-    const contentType = resp.headers.get('content-type') || '';
+    if (resp.statusCode < 200 || resp.statusCode >= 300) return null;
+    const contentType = String(resp.headers['content-type'] || '');
     const allowedTypes = ['image/', 'application/octet-stream', 'video/', 'audio/',
       'application/pdf', 'application/zip', 'application/x-zip-compressed',
       'application/msword', 'application/vnd.openxmlformats-officedocument.',
@@ -545,11 +571,11 @@ async function downloadUrl(url) {
     if (!allowedTypes.some(t => contentType.startsWith(t))) {
       return null;
     }
-    const contentLength = parseInt(resp.headers.get('content-length') || '0', 10);
+    const contentLength = parseInt(String(resp.headers['content-length'] || '0'), 10);
     if (contentLength > maxBytes) return null;
     const chunks = [];
     let received = 0;
-    for await (const chunk of resp.body) {
+    for await (const chunk of resp) {
       received += chunk.length;
       if (received > maxBytes) return null;
       chunks.push(chunk);
@@ -661,8 +687,7 @@ async function handleMessage(message) {
     return;
   }
 
-  const userName = data.dName || await getUserName(senderId);
-  cacheMessage(messageId, data);
+  const eventUserName = data.dName || String(senderId);
 
   // Access control
   if (isGroup) {
@@ -684,7 +709,7 @@ async function handleMessage(message) {
     if (!isGroupSenderAllowed(config, threadId, senderId)) return;
   } else {
     if (!hasOwner(config)) {
-      if (bindOwner(config, senderId, userName)) {
+      if (bindOwner(config, senderId, eventUserName)) {
         await api.sendMessage('You are now the admin of this bot.', threadId, threadType).catch(() => {});
       }
       return;
@@ -693,10 +718,10 @@ async function handleMessage(message) {
       if ((config.dmPolicy || 'owner') === 'pairing') {
         if (getPairingStatus(senderId) === 'unknown') {
           const firstMsg = typeof data?.content === 'string' ? data.content : '';
-          const state = markPairingPending({ userId: senderId, userName, chatId: threadId, firstMessage: firstMsg });
+          const state = markPairingPending({ userId: senderId, userName: eventUserName, chatId: threadId, firstMessage: firstMsg });
           savePairingState(state);
           sendToC4('zalo-personal', 'admin|type:dm-pairing', buildPairingNotification({
-            userId: senderId, userName, chatId: threadId, firstMessage: firstMsg
+            userId: senderId, userName: eventUserName, chatId: threadId, firstMessage: firstMsg
           }));
           await api.sendMessage('Thanks! Your request to chat has been sent to the admin for approval.', threadId, threadType).catch(() => {});
         }
@@ -715,6 +740,9 @@ async function handleMessage(message) {
       seenUsers: seenDmUsers,
     });
   }
+
+  const userName = data.dName || await getUserName(senderId);
+  cacheMessage(messageId, data);
 
   if (api && data.msgId) {
     const receiptMessage = {
@@ -853,14 +881,16 @@ async function handleReaction(reaction) {
 
   const data = reaction.data;
   const threadId = reaction.threadId;
-  const senderId = data.uidFrom;
+  const senderId = data?.uidFrom;
   const isGroup = reaction.isGroup;
+  if (!threadId || !senderId) return;
 
-  if (isGroup) {
-    if (!isGroupAllowed(config, threadId)) return;
-  } else {
-    if (!isDmAllowed(config, senderId)) return;
+  const senderKey = `${isGroup ? 'group' : 'dm'}:${threadId}:${senderId}`;
+  if (!inboundRateLimiter.allow(senderKey)) {
+    console.warn(`[zalo-personal] Rate limited reaction sender ${senderId} in ${threadId}`);
+    return;
   }
+  if (!isAuthorizedInboundEvent(threadId, senderId, isGroup)) return;
 
   const userName = data.dName || await getUserName(senderId);
   const reactionContent = data.content;
@@ -1051,8 +1081,6 @@ function timingSafeTokenEqual(a, b) {
 }
 let internalServer = null;
 
-const INTERNAL_TOKEN_PATH = path.join(SESSIONS_DIR, '.internal-token');
-
 function getOrCreateInternalToken() {
   try {
     if (fs.existsSync(INTERNAL_TOKEN_PATH)) {
@@ -1194,6 +1222,10 @@ function startInternalServer() {
             await api.sendLink({ link: action.url, msg: action.title || '' }, chatId, threadType);
             res.writeHead(200).end(JSON.stringify({ ok: true }));
           } else if (action.type === 'voice') {
+            if (!(await validatePublicHttpsUrl(action.voiceUrl))) {
+              res.writeHead(400).end(JSON.stringify({ ok: false, error: 'invalid voice URL' }));
+              return;
+            }
             await api.sendVoice({ voiceUrl: action.voiceUrl }, chatId, threadType);
             res.writeHead(200).end(JSON.stringify({ ok: true }));
           } else if (action.type === 'fetchAccountInfo') {

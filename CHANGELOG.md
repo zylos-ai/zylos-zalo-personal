@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Security
+- Harden reaction inbound handling with per-sender authorization and rate limiting.
+- Guard first-DM owner binding against stale concurrent owner snapshots.
+- Restrict configure-hook writes to an allowlist of safe runtime keys with correct casing.
+- Redact signed URL query strings from download logs, repair internal-token permissions, validate outbound voice URLs, and pin DNS resolutions during media downloads.
+
 ### Added
 - Add operator doctor diagnostics and the `scripts/admin.js` management CLI.
 - Add `dmPolicy: "pairing"` for owner-approved unknown DMs, plus first-contact DM welcome messages.

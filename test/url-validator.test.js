@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import dns from 'dns/promises';
 import {
-  isPrivateIp, isAllowedDownloadHost, isIpLikeHostname, validateUrlSyntax
+  isPrivateIp, isAllowedDownloadHost, isIpLikeHostname, validateUrlSyntax, validatePublicHttpsUrlSyntax
 } from '../src/lib/url-validator.js';
 
 async function validateDownloadUrl(url) {
@@ -148,6 +148,23 @@ describe('validateUrlSyntax', () => {
   it('rejects invalid URLs', () => {
     assert.equal(validateUrlSyntax('not a url').valid, false);
     assert.equal(validateUrlSyntax('').valid, false);
+  });
+});
+
+describe('validatePublicHttpsUrlSyntax', () => {
+  it('accepts public HTTPS hostnames outside the Zalo CDN allowlist', () => {
+    const r = validatePublicHttpsUrlSyntax('https://example.com/clip.aac');
+    assert.equal(r.valid, true);
+    assert.equal(r.hostname, 'example.com');
+  });
+
+  it('rejects non-HTTPS URLs', () => {
+    assert.equal(validatePublicHttpsUrlSyntax('http://example.com/clip.aac').valid, false);
+  });
+
+  it('rejects IP-like hostnames', () => {
+    assert.equal(validatePublicHttpsUrlSyntax('https://127.0.0.1/clip.aac').valid, false);
+    assert.equal(validatePublicHttpsUrlSyntax('https://2130706433/clip.aac').valid, false);
   });
 });
 

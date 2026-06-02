@@ -22,6 +22,17 @@ after(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
+beforeEach(() => {
+  saveConfig({
+    enabled: true,
+    dmPolicy: 'owner',
+    dmAllowFrom: [],
+    groupPolicy: 'allowlist',
+    groups: {},
+    owner: { user_id: null, name: null, bound_at: null }
+  });
+});
+
 function makeConfig(overrides = {}) {
   return {
     dmPolicy: 'owner',
@@ -75,6 +86,20 @@ describe('bindOwner', () => {
     const config = makeConfig();
     bindOwner(config, 789, 'User3');
     assert.equal(config.owner.user_id, '789');
+  });
+
+  it('does not overwrite an owner that was bound by a concurrent stale snapshot', () => {
+    saveConfig(makeConfig({
+      owner: { user_id: 'existing-owner', name: 'Existing', bound_at: '2026-01-01T00:00:00.000Z' },
+      dmAllowFrom: ['existing-owner']
+    }));
+    const staleConfig = makeConfig();
+
+    const result = bindOwner(staleConfig, 'new-owner', 'New');
+
+    assert.equal(result, false);
+    assert.equal(staleConfig.owner.user_id, 'existing-owner');
+    assert.deepEqual(staleConfig.dmAllowFrom, ['existing-owner']);
   });
 });
 

@@ -33,3 +33,11 @@ export function validateUrlSyntax(url) {
   if (!isAllowedDownloadHost(parsed.hostname)) return { valid: false };
   return { valid: true, hostname: parsed.hostname };
 }
+
+export function validatePublicHttpsUrlSyntax(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return { valid: false }; }
+  if (parsed.protocol !== 'https:') return { valid: false };
+  if (isIpLikeHostname(parsed.hostname)) return { valid: false };
+  return { valid: true, hostname: parsed.hostname };
+}
