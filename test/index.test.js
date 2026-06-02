@@ -180,6 +180,72 @@ function createThinkingTracker() {
   };
 }
 
+function createRateLimiter({ windowMs = 60000, max = 60, maxKeys = 1000 } = {}) {
+  const buckets = new Map();
+
+  function sweep(now) {
+    for (const [key, bucket] of buckets) {
+      if (now - bucket.startedAt > windowMs) buckets.delete(key);
+    }
+    while (buckets.size > maxKeys) {
+      buckets.delete(buckets.keys().next().value);
+    }
+  }
+
+  return {
+    allow(key = 'unknown', now = Date.now()) {
+      sweep(now);
+      const bucket = buckets.get(key);
+      if (!bucket || now - bucket.startedAt > windowMs) {
+        buckets.set(key, { startedAt: now, count: 1 });
+        while (buckets.size > maxKeys) {
+          buckets.delete(buckets.keys().next().value);
+        }
+        return true;
+      }
+      bucket.count += 1;
+      return bucket.count <= max;
+    },
+    size() {
+      return buckets.size;
+    }
+  };
+}
+
+function createThreadQueue() {
+  const queues = new Map();
+  return {
+    enqueue(threadId, task) {
+      const key = String(threadId || 'unknown');
+      const previous = queues.get(key) || Promise.resolve();
+      const next = previous
+        .catch(() => {})
+        .then(task)
+        .finally(() => {
+          if (queues.get(key) === next) queues.delete(key);
+        });
+      queues.set(key, next);
+      return next;
+    },
+    size() {
+      return queues.size;
+    }
+  };
+}
+
+function shouldSendSessionAlert({ lastAlertAt, now, cooldownMs }) {
+  return !lastAlertAt || now - lastAlertAt >= cooldownMs;
+}
+
+function buildReadStatusMessage(data, threadId, threadType) {
+  if (!data.msgId) return null;
+  return {
+    data: { msgId: String(data.msgId), cliMsgId: String(data.cliMsgId || data.msgId) },
+    threadId,
+    type: threadType
+  };
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -666,6 +732,82 @@ describe('thinking indicator tracking', () => {
     tracker.add('g1:msg1', { msgId: '999' });
     assert.equal(tracker.get('g1:msg1').msgId, '999');
     assert.equal(tracker.size(), 1);
+  });
+});
+
+describe('inbound rate limiter', () => {
+  it('allows requests up to the configured sender limit', () => {
+    const limiter = createRateLimiter({ windowMs: 1000, max: 2 });
+    assert.equal(limiter.allow('dm:u1', 1000), true);
+    assert.equal(limiter.allow('dm:u1', 1001), true);
+    assert.equal(limiter.allow('dm:u1', 1002), false);
+    assert.equal(limiter.allow('dm:u1', 2001), true);
+  });
+
+  it('tracks senders independently and evicts old keys', () => {
+    const limiter = createRateLimiter({ windowMs: 1000, max: 1, maxKeys: 2 });
+    assert.equal(limiter.allow('a', 1000), true);
+    assert.equal(limiter.allow('b', 1000), true);
+    assert.equal(limiter.allow('c', 1000), true);
+    assert.equal(limiter.size() <= 2, true);
+    assert.equal(limiter.allow('b', 2001), true);
+  });
+});
+
+describe('per-thread dispatch queue', () => {
+  it('serializes tasks for the same thread', async () => {
+    const queue = createThreadQueue();
+    const events = [];
+    const first = queue.enqueue('thread-1', async () => {
+      events.push('first-start');
+      await new Promise(resolve => setTimeout(resolve, 20));
+      events.push('first-end');
+    });
+    const second = queue.enqueue('thread-1', async () => {
+      events.push('second-start');
+      events.push('second-end');
+    });
+    await Promise.all([first, second]);
+    assert.deepEqual(events, ['first-start', 'first-end', 'second-start', 'second-end']);
+    assert.equal(queue.size(), 0);
+  });
+
+  it('allows independent threads to proceed without shared ordering', async () => {
+    const queue = createThreadQueue();
+    const events = [];
+    await Promise.all([
+      queue.enqueue('a', async () => { events.push('a'); }),
+      queue.enqueue('b', async () => { events.push('b'); })
+    ]);
+    assert.deepEqual(new Set(events), new Set(['a', 'b']));
+  });
+});
+
+describe('session expiry alert helpers', () => {
+  it('suppresses duplicate alerts during cooldown', () => {
+    assert.equal(shouldSendSessionAlert({ lastAlertAt: 0, now: 1000, cooldownMs: 5000 }), true);
+    assert.equal(shouldSendSessionAlert({ lastAlertAt: 1000, now: 2000, cooldownMs: 5000 }), false);
+    assert.equal(shouldSendSessionAlert({ lastAlertAt: 1000, now: 6000, cooldownMs: 5000 }), true);
+  });
+});
+
+describe('read status auto-trigger helpers', () => {
+  it('builds zca message references for seen and delivered actions', () => {
+    const result = buildReadStatusMessage({ msgId: 123, cliMsgId: 456 }, 'thread-1', ThreadType.User);
+    assert.deepEqual(result, {
+      data: { msgId: '123', cliMsgId: '456' },
+      threadId: 'thread-1',
+      type: ThreadType.User
+    });
+  });
+
+  it('falls back cliMsgId to msgId and skips messages without msgId', () => {
+    assert.deepEqual(buildReadStatusMessage({ msgId: 'm1' }, 'thread-1', ThreadType.Group), {
+      data: { msgId: 'm1', cliMsgId: 'm1' },
+      threadId: 'thread-1',
+      type: ThreadType.Group
+    });
+    assert.equal(buildReadStatusMessage({ cliMsgId: 'only-cli' }, 'thread-1', ThreadType.Group), null);
   });
 });
 

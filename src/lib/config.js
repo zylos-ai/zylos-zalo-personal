@@ -14,7 +14,15 @@ function freshDefaults() {
     groups: {},
     owner: { user_id: null, name: null, bound_at: null },
     features: {
-      download_media: true
+      download_media: true,
+      inbound_rate_limit: {
+        window_ms: 60 * 1000,
+        max: 60
+      },
+      session_alert: {
+        disconnect_grace_ms: 5 * 60 * 1000,
+        cooldown_ms: 30 * 60 * 1000
+      }
     },
     message: {
       context_messages: 5,

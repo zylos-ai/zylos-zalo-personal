@@ -70,11 +70,64 @@ let ownId = null;
 let stopped = false;
 let wsHealthy = false;
 let disconnectedSince = null;
+let disconnectAlertTimer = null;
+let lastSessionAlertAt = 0;
 
 const MENTION_WINDOW_MS = 30000;
 const recentMentions = new Map();
 const pendingThinking = new Map();
 const PENDING_THINKING_TTL_MS = 5 * 60 * 1000;
+const c4ThreadQueues = new Map();
+
+function createRateLimiter({ windowMs = 60_000, max = 60, maxKeys = 1000 } = {}) {
+  const buckets = new Map();
+
+  function sweep(now) {
+    for (const [key, bucket] of buckets) {
+      if (now - bucket.startedAt > windowMs) buckets.delete(key);
+    }
+    while (buckets.size > maxKeys) {
+      buckets.delete(buckets.keys().next().value);
+    }
+  }
+
+  return {
+    allow(key = 'unknown', now = Date.now()) {
+      sweep(now);
+      const bucket = buckets.get(key);
+      if (!bucket || now - bucket.startedAt > windowMs) {
+        buckets.set(key, { startedAt: now, count: 1 });
+        while (buckets.size > maxKeys) {
+          buckets.delete(buckets.keys().next().value);
+        }
+        return true;
+      }
+      bucket.count += 1;
+      return bucket.count <= max;
+    },
+    size() {
+      return buckets.size;
+    }
+  };
+}
+
+const inboundRateLimiter = createRateLimiter({
+  windowMs: config.features?.inbound_rate_limit?.window_ms || 60_000,
+  max: config.features?.inbound_rate_limit?.max || 60
+});
+
+function enqueueByThread(threadId, task) {
+  const key = String(threadId || 'unknown');
+  const previous = c4ThreadQueues.get(key) || Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(task)
+    .finally(() => {
+      if (c4ThreadQueues.get(key) === next) c4ThreadQueues.delete(key);
+    });
+  c4ThreadQueues.set(key, next);
+  return next;
+}
 
 function clearPendingThinking(correlationId) {
   const pending = pendingThinking.get(correlationId);
@@ -102,24 +155,32 @@ function execC4(source, endpoint, content, callback) {
   execFile('node', args, { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024 }, callback);
 }
 
-function sendToC4(source, endpoint, content, onReject, onFinalFailure) {
-  if (!content) return;
+function sendToC4(source, endpoint, content, onReject, onFinalFailure, onDone) {
+  if (!content) {
+    if (onDone) onDone();
+    return;
+  }
 
   execC4(source, endpoint, content, (error, stdout) => {
     if (!error) {
       console.log(`[zalo-personal] Sent to C4: ${content.length > 60 ? content.substring(0, 60) + '...' : content}`);
+      if (onDone) onDone();
       return;
     }
     const response = parseC4Response(stdout);
     if (response && response.ok === false && response.error?.message) {
       console.warn(`[zalo-personal] C4 rejected: ${response.error.message}`);
       if (onReject) onReject(response.error.message);
+      if (onDone) onDone();
       return;
     }
     console.warn(`[zalo-personal] C4 send failed, retrying in 2s: ${error.message}`);
     setTimeout(() => {
       execC4(source, endpoint, content, (retryError, retryStdout) => {
-        if (!retryError) return;
+        if (!retryError) {
+          if (onDone) onDone();
+          return;
+        }
         const r = parseC4Response(retryStdout);
         if (r?.ok === false && r.error?.message && onReject) {
           onReject(r.error.message);
@@ -127,9 +188,46 @@ function sendToC4(source, endpoint, content, onReject, onFinalFailure) {
           console.error(`[zalo-personal] C4 delivery failed after retry: ${retryError.message}`);
           onFinalFailure();
         }
+        if (onDone) onDone();
       });
     }, 2000);
   });
+}
+
+function sendToC4Queued(threadId, source, endpoint, content, onReject, onFinalFailure) {
+  enqueueByThread(threadId, () => new Promise((resolve) => {
+    sendToC4(source, endpoint, content, onReject, onFinalFailure, resolve);
+  }));
+}
+
+function notifyOwnerSessionExpired(reason) {
+  const now = Date.now();
+  const cooldownMs = config.features?.session_alert?.cooldown_ms || 30 * 60 * 1000;
+  if (lastSessionAlertAt && now - lastSessionAlertAt < cooldownMs) return;
+  lastSessionAlertAt = now;
+  const text = [
+    '[Zalo Personal session alert]',
+    reason || 'The saved Zalo Personal session appears to be unavailable.',
+    'QR re-login may be required.'
+  ].join('\n');
+  sendToC4('zalo-personal', 'admin|type:session-expiry', text);
+}
+
+function scheduleDisconnectAlert(code, reason) {
+  if (disconnectAlertTimer || stopped) return;
+  const graceMs = config.features?.session_alert?.disconnect_grace_ms || 5 * 60 * 1000;
+  disconnectAlertTimer = setTimeout(() => {
+    disconnectAlertTimer = null;
+    if (stopped || wsHealthy) return;
+    notifyOwnerSessionExpired(`WebSocket has been disconnected since ${disconnectedSince || 'unknown'} (${code || 'unknown'} ${reason || ''}).`);
+  }, graceMs);
+  disconnectAlertTimer.unref?.();
+}
+
+function clearDisconnectAlert() {
+  if (!disconnectAlertTimer) return;
+  clearTimeout(disconnectAlertTimer);
+  disconnectAlertTimer = null;
 }
 
 // ============================================================
@@ -441,6 +539,11 @@ async function handleMessage(message) {
   const messageId = data.msgId || data.cliMsgId || `${Date.now()}`;
   const isGroup = message.type === ThreadType.Group;
   const threadType = isGroup ? ThreadType.Group : ThreadType.User;
+  const senderKey = `${isGroup ? 'group' : 'dm'}:${threadId}:${senderId}`;
+  if (!inboundRateLimiter.allow(senderKey)) {
+    console.warn(`[zalo-personal] Rate limited inbound sender ${senderId} in ${threadId}`);
+    return;
+  }
 
   const userName = data.dName || await getUserName(senderId);
   cacheMessage(messageId, data);
@@ -495,6 +598,16 @@ async function handleMessage(message) {
       message: config.dmWelcomeMessage,
       seenUsers: seenDmUsers,
     });
+  }
+
+  if (api && data.msgId) {
+    const receiptMessage = {
+      data: { msgId: String(data.msgId), cliMsgId: String(data.cliMsgId || data.msgId) },
+      threadId,
+      type: threadType
+    };
+    api.sendDeliveredEvent(false, [receiptMessage], threadType).catch(() => {});
+    api.sendSeenEvent([receiptMessage], threadType).catch(() => {});
   }
 
   // Determine mention and mode for groups
@@ -587,7 +700,7 @@ async function handleMessage(message) {
     smartHint: smartNoMention
   });
 
-  sendToC4('zalo-personal', endpoint, msg, async (errMsg) => {
+  sendToC4Queued(threadId, 'zalo-personal', endpoint, msg, async (errMsg) => {
     stopTyping(correlationId);
     clearPendingThinking(correlationId);
     await api.sendMessage(errMsg, threadId, threadType).catch(() => {});
@@ -694,6 +807,7 @@ async function authenticate() {
       return true;
     } catch (err) {
       console.warn(`[zalo-personal] Saved credentials failed: ${err.message}`);
+      notifyOwnerSessionExpired(`Saved credentials failed: ${err.message}`);
       console.log('[zalo-personal] Falling back to QR login...');
     }
   }
@@ -1082,12 +1196,14 @@ async function main() {
     console.log('[zalo-personal] WebSocket connected');
     wsHealthy = true;
     disconnectedSince = null;
+    clearDisconnectAlert();
   });
 
   api.listener.on('closed', (code, reason) => {
     console.log(`[zalo-personal] WebSocket closed: ${code} ${reason}`);
     wsHealthy = false;
     if (!disconnectedSince) disconnectedSince = new Date().toISOString();
+    scheduleDisconnectAlert(code, reason);
     if (!stopped && code !== 1000) {
       console.log('[zalo-personal] Will auto-restart via PM2');
     }
@@ -1108,6 +1224,7 @@ function shutdown() {
   clearInterval(cleanupInterval);
   if (typingWatcher) typingWatcher.close();
   if (keepAliveInterval) clearInterval(keepAliveInterval);
+  clearDisconnectAlert();
 
   for (const [, state] of activeTyping) {
     clearInterval(state.interval);

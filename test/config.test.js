@@ -44,6 +44,8 @@ describe('config.js', () => {
       assert.equal(config.internal_port, 3463);
       assert.deepEqual(config.dmAllowFrom, []);
       assert.deepEqual(config.groups, {});
+      assert.deepEqual(config.features.inbound_rate_limit, { window_ms: 60000, max: 60 });
+      assert.deepEqual(config.features.session_alert, { disconnect_grace_ms: 300000, cooldown_ms: 1800000 });
     });
 
     it('loads config from file', () => {
