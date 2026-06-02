@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 
 const EXTERNAL_TRANSCRIBE = path.join(process.env.HOME || '', 'zylos/bin/transcribe');
+const providerCache = new Map();
 
 function executableExists(filePath) {
   try {
@@ -33,23 +34,49 @@ function runCommand(command, args, timeout = 90_000) {
 
 export function getTranscriptionProvider(mode = 'auto', env = process.env, { modelPath = env.WHISPER_MODEL } = {}) {
   const normalized = String(mode || 'auto').trim().toLowerCase();
-  if (normalized === 'disabled') return { available: false, provider: 'disabled' };
+  const cacheKey = JSON.stringify({
+    mode: normalized,
+    modelPath: modelPath || '',
+    openai: Boolean(env.OPENAI_API_KEY),
+  });
+  if (providerCache.has(cacheKey)) return providerCache.get(cacheKey);
+
+  let provider;
+  if (normalized === 'disabled') {
+    provider = { available: false, provider: 'disabled' };
+    providerCache.set(cacheKey, provider);
+    return provider;
+  }
 
   if ((normalized === 'auto' || normalized === 'local') && executableExists(EXTERNAL_TRANSCRIBE)) {
-    return { available: true, provider: 'external', command: EXTERNAL_TRANSCRIBE };
+    provider = { available: true, provider: 'external', command: EXTERNAL_TRANSCRIBE };
+    providerCache.set(cacheKey, provider);
+    return provider;
   }
   if ((normalized === 'auto' || normalized === 'local') && commandExists('whisper-cli')) {
-    if (modelPath) return { available: true, provider: 'whisper.cpp', command: 'whisper-cli', modelPath };
+    if (modelPath) {
+      provider = { available: true, provider: 'whisper.cpp', command: 'whisper-cli', modelPath };
+      providerCache.set(cacheKey, provider);
+      return provider;
+    }
     console.warn('[zalo-personal] whisper-cli found but WHISPER_MODEL not set — skipping');
   }
   if ((normalized === 'auto' || normalized === 'local') && commandExists('whisper')) {
-    if (modelPath) return { available: true, provider: 'whisper.cpp', command: 'whisper', modelPath };
+    if (modelPath) {
+      provider = { available: true, provider: 'whisper.cpp', command: 'whisper', modelPath };
+      providerCache.set(cacheKey, provider);
+      return provider;
+    }
     console.warn('[zalo-personal] whisper found but WHISPER_MODEL not set — skipping');
   }
   if ((normalized === 'auto' || normalized === 'api') && env.OPENAI_API_KEY) {
-    return { available: true, provider: 'openai-api' };
+    provider = { available: true, provider: 'openai-api' };
+    providerCache.set(cacheKey, provider);
+    return provider;
   }
-  return { available: false, provider: 'none' };
+  provider = { available: false, provider: 'none' };
+  providerCache.set(cacheKey, provider);
+  return provider;
 }
 
 async function transcribeWithOpenAI(audioPath, apiKey) {

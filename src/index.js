@@ -40,6 +40,9 @@ import {
 import { getTranscriptionProvider, transcribeAudio } from './lib/transcribe.js';
 import { extractVoiceUrl, isVoiceMessageData, summarizeVoiceContentShape } from './lib/voice.js';
 import { requestPinned } from './lib/pinned-request.js';
+import {
+  cleanupMediaTree, sweepTimestampCache, truncateLogFileAtomic, unlinkQuiet
+} from './lib/resource-lifecycle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -87,6 +90,7 @@ const recentMentions = new Map();
 const pendingThinking = new Map();
 const PENDING_THINKING_TTL_MS = 5 * 60 * 1000;
 const c4ThreadQueues = new Map();
+const c4RetryTimers = new Set();
 const loggedVoiceShapes = new Set();
 
 function createRateLimiter({ windowMs = 60_000, max = 60, maxKeys = 1000 } = {}) {
@@ -185,7 +189,8 @@ function sendToC4(source, endpoint, content, onReject, onFinalFailure, onDone) {
       return;
     }
     console.warn(`[zalo-personal] C4 send failed, retrying in 2s: ${error.message}`);
-    setTimeout(() => {
+    const retryTimer = setTimeout(() => {
+      c4RetryTimers.delete(retryTimer);
       execC4(source, endpoint, content, (retryError, retryStdout) => {
         if (!retryError) {
           if (onDone) onDone();
@@ -201,12 +206,17 @@ function sendToC4(source, endpoint, content, onReject, onFinalFailure, onDone) {
         if (onDone) onDone();
       });
     }, 2000);
+    retryTimer.unref?.();
+    c4RetryTimers.add(retryTimer);
   });
 }
 
-function sendToC4Queued(threadId, source, endpoint, content, onReject, onFinalFailure) {
+function sendToC4Queued(threadId, source, endpoint, content, onReject, onFinalFailure, onDone) {
   enqueueByThread(threadId, () => new Promise((resolve) => {
-    sendToC4(source, endpoint, content, onReject, onFinalFailure, resolve);
+    sendToC4(source, endpoint, content, onReject, onFinalFailure, () => {
+      if (onDone) onDone();
+      resolve();
+    });
   }));
 }
 
@@ -258,6 +268,8 @@ function startTyping(threadId, correlationId, threadType) {
     if (api) api.sendTypingEvent(threadId, threadType).catch(() => {});
   }, 5000);
   const timeout = setTimeout(() => stopTyping(correlationId), TYPING_TIMEOUT);
+  interval.unref?.();
+  timeout.unref?.();
   activeTyping.set(correlationId, { interval, timeout, startedAt: Date.now() });
 }
 
@@ -305,7 +317,13 @@ const typingPollInterval = setInterval(() => {
   for (const [id, entry] of messageCache) {
     if (entry.cachedAt && now - entry.cachedAt > MSG_CACHE_TTL_MS) messageCache.delete(id);
   }
+  sweepTimestampCache(userNameCache, {
+    ttlMs: USER_NAME_CACHE_TTL_MS,
+    maxSize: USER_NAME_CACHE_MAX_SIZE,
+    now,
+  });
 }, 30000);
+typingPollInterval.unref?.();
 
 // Clean stale markers
 try {
@@ -338,6 +356,8 @@ function buildEndpoint(threadId, { messageId, threadType } = {}) {
 
 const userNameCache = new Map();
 const messageCache = new Map();
+const USER_NAME_CACHE_TTL_MS = 10 * 60 * 1000;
+const USER_NAME_CACHE_MAX_SIZE = 1000;
 
 function cacheMessage(msgId, data) {
   messageCache.set(String(msgId), {
@@ -357,14 +377,18 @@ function cacheMessage(msgId, data) {
 }
 
 async function getUserName(userId) {
-  if (userNameCache.has(userId)) return userNameCache.get(userId);
+  const cached = userNameCache.get(userId);
+  if (cached) return cached.name;
   try {
     const info = await api.getUserInfo(userId);
     if (info) {
       const profile = Object.values(info)[0];
       const name = profile?.zaloName || profile?.displayName || String(userId);
-      userNameCache.set(userId, name);
-      setTimeout(() => userNameCache.delete(userId), 600000);
+      userNameCache.set(userId, { name, cachedAt: Date.now() });
+      sweepTimestampCache(userNameCache, {
+        ttlMs: USER_NAME_CACHE_TTL_MS,
+        maxSize: USER_NAME_CACHE_MAX_SIZE,
+      });
       return name;
     }
   } catch {}
@@ -666,7 +690,8 @@ function scheduleVoiceTranscription({ voiceUrl, content, threadId, threadType, m
     } catch (err) {
       logVoiceShapeOnce(content, 'transcription failed');
       console.error(`[zalo-personal] Voice transcription failed for ${messageId}: ${err.message}`);
-      try { if (voicePath) fs.unlinkSync(voicePath); } catch {}
+    } finally {
+      unlinkQuiet(voicePath);
     }
   });
 }
@@ -794,6 +819,7 @@ async function handleMessage(message) {
   logAndRecord(threadId, logEntry, config);
 
   if (!shouldForward) {
+    unlinkQuiet(mediaPath);
     console.log(`[zalo-personal] Group ${threadId} mention-mode: no @mention, logged only`);
     return;
   }
@@ -977,6 +1003,7 @@ function startKeepAlive() {
       console.warn(`[zalo-personal] Keep-alive failed: ${err.message}`);
     }
   }, 60000);
+  keepAliveInterval.unref?.();
 }
 
 // ============================================================
@@ -1183,12 +1210,15 @@ function startInternalServer() {
             const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
             const STAGING_DIR = path.join(MEDIA_DIR, 'staging');
             fs.mkdirSync(STAGING_DIR, { recursive: true, mode: 0o700 });
-            const resolved = fs.realpathSync(path.resolve(action.filePath));
+            const requested = path.resolve(action.filePath);
+            if (!fs.existsSync(requested)) {
+              res.writeHead(404).end(JSON.stringify({ ok: false, error: 'file not found' }));
+              return;
+            }
+            const resolved = fs.realpathSync(requested);
             const allowed = [MEDIA_DIR, STAGING_DIR].some(d => resolved.startsWith(d + path.sep));
             if (!allowed) {
               res.writeHead(403).end(JSON.stringify({ ok: false, error: 'path not allowed — must be in component media dir' }));
-            } else if (!fs.existsSync(resolved)) {
-              res.writeHead(404).end(JSON.stringify({ ok: false, error: 'file not found' }));
             } else {
               const stat = fs.statSync(resolved);
               if (!stat.isFile()) {
@@ -1337,39 +1367,27 @@ const LOGS_DIR = path.join(DATA_DIR, 'logs');
 
 function runCleanup() {
   try {
-    const now = Date.now();
-    for (const file of fs.readdirSync(MEDIA_DIR)) {
-      try {
-        const fp = path.join(MEDIA_DIR, file);
-        const stat = fs.statSync(fp);
-        if (stat.isDirectory()) continue;
-        if (now - stat.mtimeMs > MEDIA_MAX_AGE_MS) fs.unlinkSync(fp);
-      } catch {}
-    }
+    cleanupMediaTree(MEDIA_DIR, MEDIA_MAX_AGE_MS);
   } catch {}
   try {
     for (const file of fs.readdirSync(LOGS_DIR)) {
       if (!file.endsWith('.jsonl')) continue;
       try {
         const fp = path.join(LOGS_DIR, file);
-        const stat = fs.statSync(fp);
-        if (stat.size <= LOG_MAX_BYTES) continue;
-        const keepBytes = 1024 * 1024;
-        const buf = Buffer.alloc(keepBytes);
-        const fd = fs.openSync(fp, 'r');
-        fs.readSync(fd, buf, 0, keepBytes, stat.size - keepBytes);
-        fs.closeSync(fd);
-        let content = buf.toString('utf-8');
-        const nl = content.indexOf('\n');
-        if (nl >= 0) content = content.substring(nl + 1);
-        fs.writeFileSync(fp, content, { mode: 0o600 });
-        console.log(`[zalo-personal] Truncated log ${file}: ${(stat.size / 1024).toFixed(0)}KB → ${(content.length / 1024).toFixed(0)}KB`);
+        const result = truncateLogFileAtomic(fp, {
+          maxBytes: LOG_MAX_BYTES,
+          keepBytes: 1024 * 1024,
+        });
+        if (result.truncated) {
+          console.log(`[zalo-personal] Truncated log ${file}: ${(result.oldSize / 1024).toFixed(0)}KB → ${(result.newSize / 1024).toFixed(0)}KB`);
+        }
       } catch {}
     }
   } catch {}
 }
 
 const cleanupInterval = setInterval(runCleanup, 6 * 60 * 60 * 1000);
+cleanupInterval.unref?.();
 runCleanup();
 
 // ============================================================
@@ -1456,6 +1474,8 @@ function shutdown() {
   if (typingWatcher) typingWatcher.close();
   if (keepAliveInterval) clearInterval(keepAliveInterval);
   clearDisconnectAlert();
+  for (const timer of c4RetryTimers) clearTimeout(timer);
+  c4RetryTimers.clear();
 
   for (const [, state] of activeTyping) {
     clearInterval(state.interval);

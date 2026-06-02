@@ -67,6 +67,19 @@ describe('transcription provider', () => {
     }
   });
 
+  it('memoizes provider detection', async () => {
+    const binDir = path.join(tmpHome, 'zylos/bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const transcribePath = path.join(binDir, 'transcribe');
+    fs.writeFileSync(transcribePath, '#!/bin/sh\necho ok\n', { mode: 0o755 });
+
+    const { getTranscriptionProvider } = await freshImport('src/lib/transcribe.js');
+    const provider = getTranscriptionProvider('auto', {});
+    fs.unlinkSync(transcribePath);
+
+    assert.deepEqual(getTranscriptionProvider('auto', {}), provider);
+  });
+
   it('reads audio asynchronously on the OpenAI path', async () => {
     const audioPath = path.join(tmpHome, 'voice.wav');
     fs.writeFileSync(audioPath, 'audio-bytes');

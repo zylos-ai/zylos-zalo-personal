@@ -51,11 +51,16 @@ function deepMerge(defaults, overrides) {
 
 let cachedConfig = null;
 let cachedMtime = 0;
+let lastStatCheckAt = 0;
+const CONFIG_STAT_THROTTLE_MS = 1000;
 
 export function loadConfig() {
   try {
+    const now = Date.now();
+    if (cachedConfig && now - lastStatCheckAt < CONFIG_STAT_THROTTLE_MS) return cachedConfig;
     if (!fs.existsSync(CONFIG_PATH)) return freshDefaults();
     const stat = fs.statSync(CONFIG_PATH);
+    lastStatCheckAt = now;
     if (cachedConfig && stat.mtimeMs === cachedMtime) return cachedConfig;
     const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
     cachedConfig = deepMerge(freshDefaults(), raw);
@@ -74,6 +79,8 @@ export function saveConfig(config) {
     fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
     fs.renameSync(tmp, CONFIG_PATH);
     cachedConfig = null;
+    cachedMtime = 0;
+    lastStatCheckAt = 0;
     return true;
   } catch (err) {
     console.error(`[zalo-personal] Config write failed: ${err.message}`);
