@@ -13,7 +13,7 @@ process.env.HOME = tmpHome;
 
 const {
   hasOwner, bindOwner, isOwner, isDmAllowed,
-  isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, registerGroup
+  isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, isGroupActionAllowed, registerGroup
 } = await import('../src/lib/auth.js');
 const { DATA_DIR, saveConfig } = await import('../src/lib/config.js');
 
@@ -247,6 +247,36 @@ describe('getGroupMode', () => {
   it('defaults to mention when group not found', () => {
     const config = makeConfig({ groups: {} });
     assert.equal(getGroupMode(config, 'g1'), 'mention');
+  });
+});
+
+describe('isGroupActionAllowed', () => {
+  it('fails open when no group config exists', () => {
+    const config = makeConfig({ groups: {} });
+    assert.equal(isGroupActionAllowed(config, 'g1', 'voice'), true);
+  });
+
+  it('fails open when allowedActions is not configured', () => {
+    const config = makeConfig({ groups: { g1: { name: 'G' } } });
+    assert.equal(isGroupActionAllowed(config, 'g1', 'voice'), true);
+  });
+
+  it('allows wildcard action policies', () => {
+    const config = makeConfig({ groups: { g1: { allowedActions: ['*'] } } });
+    assert.equal(isGroupActionAllowed(config, 'g1', 'voice'), true);
+    assert.equal(isGroupActionAllowed(config, 'g1', 'getGroupInfo'), true);
+  });
+
+  it('allows only explicitly configured actions', () => {
+    const config = makeConfig({ groups: { g1: { allowedActions: ['text', 'reaction'] } } });
+    assert.equal(isGroupActionAllowed(config, 'g1', 'text'), true);
+    assert.equal(isGroupActionAllowed(config, 'g1', 'reaction'), true);
+    assert.equal(isGroupActionAllowed(config, 'g1', 'voice'), false);
+  });
+
+  it('treats an empty action list as deny all', () => {
+    const config = makeConfig({ groups: { g1: { allowedActions: [] } } });
+    assert.equal(isGroupActionAllowed(config, 'g1', 'text'), false);
   });
 });
 

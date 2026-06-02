@@ -67,6 +67,14 @@ export function getGroupMode(config, groupId) {
   return gc?.mode || 'mention';
 }
 
+export function isGroupActionAllowed(config, groupId, actionType) {
+  const gc = getGroupConfig(config, groupId);
+  const allowedActions = gc?.allowedActions;
+  if (!Array.isArray(allowedActions)) return true;
+  if (allowedActions.includes('*')) return true;
+  return allowedActions.map(String).includes(String(actionType));
+}
+
 export function registerGroup(config, groupId, { name, mode } = {}) {
   if (!config.groups) config.groups = {};
   const key = String(groupId);

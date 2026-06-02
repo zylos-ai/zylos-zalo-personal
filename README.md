@@ -80,6 +80,8 @@ zylos uninstall zalo-personal
 | `groupPolicy: disabled` | All group messages blocked |
 | Unknown user | Ignored |
 
+For allowed groups, outbound/internal actions are fail-open by default. Add `groups[groupId].allowedActions` to opt in to per-group restrictions, for example `["text", "reaction"]` or `["*"]`.
+
 ## Voice Transcription
 
 Inbound voice messages are forwarded immediately as `[voice message]`. When `voiceTranscription` is `auto`, `local`, or `api`, the component downloads voice audio through the same safe Zalo download path and sends a follow-up transcript if transcription succeeds. Set `voiceTranscription` to `disabled` to keep placeholder-only behavior.
