@@ -853,8 +853,12 @@ function timingSafeTokenEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   const aBuf = Buffer.from(a);
   const bBuf = Buffer.from(b);
-  if (aBuf.length !== bBuf.length) return false;
-  return crypto.timingSafeEqual(aBuf, bBuf);
+  const maxLength = Math.max(aBuf.length, bBuf.length);
+  const aPadded = Buffer.alloc(maxLength);
+  const bPadded = Buffer.alloc(maxLength);
+  aBuf.copy(aPadded);
+  bBuf.copy(bPadded);
+  return crypto.timingSafeEqual(aPadded, bPadded) && aBuf.length === bBuf.length;
 }
 
 describe('timingSafeTokenEqual', () => {
@@ -869,7 +873,7 @@ describe('timingSafeTokenEqual', () => {
     assert.equal(timingSafeTokenEqual(a, b), false);
   });
 
-  it('rejects length mismatch before timingSafeEqual', () => {
+  it('returns false for length mismatch', () => {
     assert.equal(timingSafeTokenEqual('short', 'a-much-longer-token-value'), false);
   });
 

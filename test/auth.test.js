@@ -53,6 +53,10 @@ describe('hasOwner', () => {
     assert.equal(hasOwner(makeConfig({ owner: { user_id: null } })), false);
   });
 
+  it('returns false when owner.user_id is undefined', () => {
+    assert.equal(hasOwner(makeConfig({ owner: { user_id: undefined } })), false);
+  });
+
   it('returns true when owner is set', () => {
     assert.equal(hasOwner(makeConfig({ owner: { user_id: '123' } })), true);
   });

@@ -22,6 +22,7 @@
 import fs from 'fs';
 import path from 'path';
 import { loadConfig, DATA_DIR } from '../src/lib/config.js';
+import { safeId } from '../src/lib/ids.js';
 import { parseMarkdownStyles, splitStyledMessage } from '../src/lib/markdown-styles.js';
 
 const MAX_LENGTH = 2000;
@@ -40,10 +41,20 @@ function readStdin() {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) { resolve(''); return; }
     let data = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(data);
+    }, 5000);
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', chunk => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    setTimeout(() => resolve(data), 5000);
+    process.stdin.on('end', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(data);
+    });
   });
 }
 
@@ -58,17 +69,12 @@ function parseEndpoint(raw) {
   return result;
 }
 
-function safeCorrelationId(str) {
-  return String(str).replace(/[^a-zA-Z0-9_:-]/g, '_').substring(0, 200);
-}
-
 function markTypingDone(correlationId) {
   if (!correlationId) return;
   try {
     const typingDir = path.join(DATA_DIR, 'typing');
     fs.mkdirSync(typingDir, { recursive: true, mode: 0o700 });
-    const safeId = safeCorrelationId(correlationId);
-    fs.writeFileSync(path.join(typingDir, `${safeId}.done`), String(Date.now()), { mode: 0o600 });
+    fs.writeFileSync(path.join(typingDir, `${safeId(correlationId)}.done`), String(Date.now()), { mode: 0o600 });
   } catch {}
 }
 
@@ -218,8 +224,11 @@ async function main() {
 
     // Text message
     await clearThinking(correlationId);
-    const parsedMarkdown = parseMarkdownStyles(message);
-    const chunks = splitStyledMessage(parsedMarkdown.text, parsedMarkdown.styles, MAX_LENGTH);
+    const textMode = String(config.message?.textMode || 'markdown').trim().toLowerCase();
+    const styled = textMode === 'plain'
+      ? { text: message, styles: [] }
+      : parseMarkdownStyles(message);
+    const chunks = splitStyledMessage(styled.text, styled.styles, MAX_LENGTH);
 
     for (let i = 0; i < chunks.length; i++) {
       await sendViaService(chatId, {

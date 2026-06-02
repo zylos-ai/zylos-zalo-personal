@@ -13,12 +13,11 @@ import http from 'http';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
 import dns from 'dns/promises';
 import { Zalo, LoginQRCallbackEventType, ThreadType, Reactions } from 'zca-js';
 
-import { loadConfig, saveConfig, DATA_DIR } from './lib/config.js';
+import { loadConfig, DATA_DIR } from './lib/config.js';
 import {
   hasOwner, bindOwner, isOwner, isDmAllowed,
   isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, isGroupActionAllowed, registerGroup
@@ -31,7 +30,7 @@ import {
 } from './lib/url-validator.js';
 import { loadSeenDmUsers, sendDmWelcomeIfFirstSeen } from './lib/dm-welcome.js';
 import {
-  getPairingStatus, markPairingPending, savePairingState, buildPairingNotification
+  loadPairingState, getPairingStatus, markPairingPending, savePairingState, buildPairingNotification
 } from './lib/dm-pairing.js';
 import {
   buildUndoAwarenessText, getUndoActorId, getUndoCacheKeys,
@@ -43,8 +42,8 @@ import { requestPinned } from './lib/pinned-request.js';
 import {
   cleanupMediaTree, sweepTimestampCache, truncateLogFileAtomic, unlinkQuiet
 } from './lib/resource-lifecycle.js';
+import { safeId } from './lib/ids.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
@@ -335,10 +334,6 @@ try {
 // ============================================================
 // Endpoint builder
 // ============================================================
-
-function safeId(str) {
-  return String(str).replace(/[^a-zA-Z0-9_:-]/g, '_').substring(0, 200);
-}
 
 function buildEndpoint(threadId, { messageId, threadType } = {}) {
   let endpoint = String(threadId);
@@ -719,12 +714,7 @@ async function handleMessage(message) {
     if (config.groupPolicy === 'disabled') return;
     if (!isGroupAllowed(config, threadId)) {
       if (isOwner(config, senderId) && isBotMentioned(data)) {
-        let groupName = threadId;
-        try {
-          const info = await api.getGroupInfo([threadId]);
-          const gd = info?.gridInfoMap?.[threadId];
-          if (gd?.name) groupName = gd.name;
-        } catch {}
+        const groupName = await getGroupName(threadId);
         if (!registerGroup(config, threadId, { name: groupName })) return;
         config = loadConfig();
       } else {
@@ -741,10 +731,11 @@ async function handleMessage(message) {
     }
     if (!isDmAllowed(config, senderId)) {
       if ((config.dmPolicy || 'owner') === 'pairing') {
-        if (getPairingStatus(senderId) === 'unknown') {
+        const pairingState = loadPairingState();
+        if (getPairingStatus(senderId, pairingState) === 'unknown') {
           const firstMsg = typeof data?.content === 'string' ? data.content : '';
-          const state = markPairingPending({ userId: senderId, userName: eventUserName, chatId: threadId, firstMessage: firstMsg });
-          savePairingState(state);
+          markPairingPending({ userId: senderId, userName: eventUserName, chatId: threadId, firstMessage: firstMsg }, pairingState);
+          savePairingState(pairingState);
           sendToC4('zalo-personal', 'admin|type:dm-pairing', buildPairingNotification({
             userId: senderId, userName: eventUserName, chatId: threadId, firstMessage: firstMsg
           }));
@@ -851,8 +842,7 @@ async function handleMessage(message) {
   let contextMessages = null;
 
   if (isGroup) {
-    const gc = getGroupConfig(config, threadId);
-    groupName = gc?.name || threadId;
+    groupName = await getGroupName(threadId);
     contextMessages = getHistory(threadId, messageId, config);
   }
 
@@ -925,20 +915,20 @@ async function handleReaction(reaction) {
 
   const text = isRemoved ? '[removed reaction]' : `[reacted ${rIcon}]`;
   const endpoint = buildEndpoint(threadId, {
-    messageId: `react:${Date.now()}`,
+    messageId: `react:${data.msgId || data.cliMsgId || 'unknown'}:${Date.now()}:${crypto.randomUUID()}`,
     threadType: isGroup ? ThreadType.Group : ThreadType.User,
   });
 
   const msg = formatMessage({
     chatType: isGroup ? 'group' : 'dm',
-    groupName: isGroup ? (getGroupConfig(config, threadId)?.name || threadId) : null,
+    groupName: isGroup ? await getGroupName(threadId) : null,
     userName,
     text,
     contextMessages: null,
     mediaPath: null,
   });
 
-  sendToC4('zalo-personal', endpoint, msg);
+  sendToC4Queued(threadId, 'zalo-personal', endpoint, msg);
 }
 
 async function handleUndo(undo) {
@@ -1103,8 +1093,12 @@ function timingSafeTokenEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   const aBuf = Buffer.from(a);
   const bBuf = Buffer.from(b);
-  if (aBuf.length !== bBuf.length) return false;
-  return crypto.timingSafeEqual(aBuf, bBuf);
+  const maxLength = Math.max(aBuf.length, bBuf.length);
+  const aPadded = Buffer.alloc(maxLength);
+  const bPadded = Buffer.alloc(maxLength);
+  aBuf.copy(aPadded);
+  bBuf.copy(bPadded);
+  return crypto.timingSafeEqual(aPadded, bPadded) && aBuf.length === bBuf.length;
 }
 let internalServer = null;
 
