@@ -26,7 +26,8 @@
 ---
 
 - **Chat on Zalo** — your AI agent uses a real Zalo account, supporting private and group conversations
-- **Rich media** — send and receive images, files, stickers, reactions, and typing indicators
+- **Rich media** — send and receive images, files, voice, stickers, reactions, and typing indicators
+- **Voice transcription** — transcribe inbound voice messages with local Whisper or OpenAI API fallback
 - **Smart group monitoring** — automatically follow designated group discussions, no @mention needed
 - **Zero-config start** — first message auto-binds you as owner, no setup wizards
 - **QR code login** — scan once with Zalo mobile, session persists across restarts
@@ -78,6 +79,12 @@ zylos uninstall zalo-personal
 | Owner @mention in unregistered group | Auto-registers group |
 | `groupPolicy: disabled` | All group messages blocked |
 | Unknown user | Ignored |
+
+## Voice Transcription
+
+Inbound voice messages are forwarded immediately as `[voice message]`. When `voiceTranscription` is `auto`, `local`, or `api`, the component downloads voice audio through the same safe Zalo download path and sends a follow-up transcript if transcription succeeds. Set `voiceTranscription` to `disabled` to keep placeholder-only behavior.
+
+Local mode checks `~/zylos/bin/transcribe`, then `whisper-cli` or `whisper` when `whisperModel` or `WHISPER_MODEL` is configured. API mode requires `OPENAI_API_KEY`.
 
 ## Important Caveats
 
