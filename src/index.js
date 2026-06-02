@@ -1126,6 +1126,12 @@ function startInternalServer() {
 
           if (action.type === 'text') {
             let quoteObj = null;
+            const styles = Array.isArray(action.styles) && action.styles.length > 0
+              ? action.styles
+              : undefined;
+            const messageContent = styles
+              ? { msg: action.text, styles }
+              : { msg: action.text };
             if (action.quote) {
               if (typeof action.quote === 'object' && action.quote.msgId) {
                 quoteObj = action.quote;
@@ -1136,13 +1142,13 @@ function startInternalServer() {
             }
             if (quoteObj) {
               try {
-                await api.sendMessage({ msg: action.text, quote: quoteObj }, chatId, threadType);
+                await api.sendMessage({ ...messageContent, quote: quoteObj }, chatId, threadType);
               } catch (quoteErr) {
                 console.warn(`[zalo-personal] Quote-reply failed (${quoteErr.message}), falling back to plain text`);
-                await api.sendMessage(action.text, chatId, threadType);
+                await api.sendMessage(messageContent, chatId, threadType);
               }
             } else {
-              await api.sendMessage(action.text, chatId, threadType);
+              await api.sendMessage(messageContent, chatId, threadType);
             }
             res.writeHead(200).end(JSON.stringify({ ok: true }));
           } else if (action.type === 'attachment') {

@@ -22,6 +22,7 @@
 import fs from 'fs';
 import path from 'path';
 import { loadConfig, DATA_DIR } from '../src/lib/config.js';
+import { parseMarkdownStyles, splitStyledMessage } from '../src/lib/markdown-styles.js';
 
 const MAX_LENGTH = 2000;
 
@@ -55,47 +56,6 @@ function parseEndpoint(raw) {
     result[key] = rest.join(':');
   }
   return result;
-}
-
-function stripMarkdown(text) {
-  return text
-    .replace(/```[\s\S]*?```/g, m => m.slice(3, -3).replace(/^\w*\n/, ''))
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
-    .replace(/\*(.+?)\*/g, '$1')
-    .replace(/_(.+?)_/g, '$1')
-    .replace(/~~(.+?)~~/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^\s*[-*+]\s/gm, '- ')
-    .replace(/^\s*>\s?/gm, '')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
-}
-
-function splitMessage(text, maxLen) {
-  if (text.length <= maxLen) return [text];
-  const chunks = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    if (remaining.length <= maxLen) { chunks.push(remaining); break; }
-    let breakAt = maxLen;
-    const chunk = remaining.substring(0, breakAt);
-    const lastParaBreak = chunk.lastIndexOf('\n\n');
-    if (lastParaBreak > maxLen * 0.3) {
-      breakAt = lastParaBreak + 1;
-    } else {
-      const lastNewline = chunk.lastIndexOf('\n');
-      if (lastNewline > maxLen * 0.3) breakAt = lastNewline;
-      else {
-        const lastSpace = chunk.lastIndexOf(' ');
-        if (lastSpace > maxLen * 0.3) breakAt = lastSpace;
-      }
-    }
-    const part = remaining.substring(0, breakAt).trim();
-    remaining = remaining.substring(breakAt).trim();
-    if (part.length > 0) chunks.push(part);
-  }
-  return chunks;
 }
 
 function safeCorrelationId(str) {
@@ -258,13 +218,14 @@ async function main() {
 
     // Text message
     await clearThinking(correlationId);
-    const cleaned = stripMarkdown(message);
-    const chunks = splitMessage(cleaned, MAX_LENGTH);
+    const parsedMarkdown = parseMarkdownStyles(message);
+    const chunks = splitStyledMessage(parsedMarkdown.text, parsedMarkdown.styles, MAX_LENGTH);
 
     for (let i = 0; i < chunks.length; i++) {
       await sendViaService(chatId, {
         type: 'text',
-        text: chunks[i],
+        text: chunks[i].text,
+        styles: chunks[i].styles,
         threadType,
         quote: (i === 0) ? parsed.msg : null
       });

@@ -6,6 +6,7 @@
 - Surface inbound Zalo recall/delete-for-everyone events to C4 through the `undo` listener.
 - Transcribe inbound voice messages when a safe Zalo voice URL and transcription provider are available.
 - Add opt-in per-group `allowedActions` policies for `/internal/send` group actions.
+- Preserve basic Markdown emphasis and list styling when sending text via Zalo native text styles.
 
 ## [0.1.2] - 2026-05-28
 
