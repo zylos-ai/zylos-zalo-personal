@@ -33,6 +33,10 @@ import { loadSeenDmUsers, sendDmWelcomeIfFirstSeen } from './lib/dm-welcome.js';
 import {
   getPairingStatus, markPairingPending, savePairingState, buildPairingNotification
 } from './lib/dm-pairing.js';
+import {
+  buildUndoAwarenessText, getUndoActorId, getUndoCacheKeys,
+  getUndoDeletedMessageId, getUndoThreadId
+} from './lib/undo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -359,6 +363,26 @@ async function getUserName(userId) {
     }
   } catch {}
   return String(userId);
+}
+
+async function getGroupName(groupId) {
+  const configuredName = getGroupConfig(config, groupId)?.name;
+  if (configuredName) return configuredName;
+  try {
+    const info = await api.getGroupInfo([groupId]);
+    const group = info?.gridInfoMap?.[groupId];
+    if (group?.name) return group.name;
+  } catch {}
+  return String(groupId);
+}
+
+function isAuthorizedInboundEvent(threadId, senderId, isGroup) {
+  if (isGroup) {
+    if (config.groupPolicy === 'disabled') return false;
+    if (!isGroupAllowed(config, threadId)) return false;
+    return isGroupSenderAllowed(config, threadId, senderId);
+  }
+  return isDmAllowed(config, senderId);
 }
 
 // ============================================================
@@ -751,6 +775,53 @@ async function handleReaction(reaction) {
   });
 
   sendToC4('zalo-personal', endpoint, msg);
+}
+
+async function handleUndo(undo) {
+  if (undo.isSelf) return;
+  config = loadConfig();
+
+  const threadId = getUndoThreadId(undo);
+  const senderId = getUndoActorId(undo);
+  const isGroup = Boolean(undo.isGroup);
+  const threadType = isGroup ? ThreadType.Group : ThreadType.User;
+  if (!threadId || !senderId) return;
+
+  const senderKey = `${isGroup ? 'group' : 'dm'}:${threadId}:${senderId}`;
+  if (!inboundRateLimiter.allow(senderKey)) {
+    console.warn(`[zalo-personal] Rate limited undo sender ${senderId} in ${threadId}`);
+    return;
+  }
+  if (!isAuthorizedInboundEvent(threadId, senderId, isGroup)) return;
+
+  for (const key of getUndoCacheKeys(undo)) messageCache.delete(key);
+
+  const userName = undo.data?.dName || await getUserName(senderId);
+  const groupName = isGroup ? await getGroupName(threadId) : null;
+  const deletedMessageId = getUndoDeletedMessageId(undo) || `${Date.now()}`;
+  const messageId = `undo:${deletedMessageId}`;
+  const text = buildUndoAwarenessText({ isGroup, threadName: groupName });
+
+  ensureReplay(threadId, config);
+  logAndRecord(threadId, {
+    timestamp: new Date().toISOString(),
+    message_id: messageId,
+    user_id: senderId,
+    user_name: userName,
+    text
+  }, config);
+
+  const endpoint = buildEndpoint(threadId, { messageId, threadType });
+  const msg = formatMessage({
+    chatType: isGroup ? 'group' : 'dm',
+    groupName,
+    userName,
+    text,
+    contextMessages: null,
+    mediaPath: null,
+  });
+
+  sendToC4Queued(threadId, 'zalo-personal', endpoint, msg);
 }
 
 // ============================================================
@@ -1185,6 +1256,12 @@ async function main() {
   api.listener.on('reaction', (reaction) => {
     handleReaction(reaction).catch(err => {
       console.error(`[zalo-personal] Reaction handler error: ${err.message}`);
+    });
+  });
+
+  api.listener.on('undo', (undo) => {
+    handleUndo(undo).catch(err => {
+      console.error(`[zalo-personal] Undo handler error: ${err.message}`);
     });
   });
 

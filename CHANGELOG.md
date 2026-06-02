@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Surface inbound Zalo recall/delete-for-everyone events to C4 through the `undo` listener.
+
 ## [0.1.2] - 2026-05-28
 
 ### Fixed
