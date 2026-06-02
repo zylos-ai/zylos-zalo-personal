@@ -28,6 +28,8 @@ function freshDefaults() {
       context_messages: 5,
       textMode: 'plain'
     },
+    voiceTranscription: 'auto',
+    whisperModel: '',
     internal_port: 3463
   };
 }

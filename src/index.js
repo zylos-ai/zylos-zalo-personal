@@ -37,6 +37,8 @@ import {
   buildUndoAwarenessText, getUndoActorId, getUndoCacheKeys,
   getUndoDeletedMessageId, getUndoThreadId
 } from './lib/undo.js';
+import { getTranscriptionProvider, transcribeAudio } from './lib/transcribe.js';
+import { extractVoiceUrl, isVoiceMessageData, summarizeVoiceContentShape } from './lib/voice.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -82,6 +84,7 @@ const recentMentions = new Map();
 const pendingThinking = new Map();
 const PENDING_THINKING_TTL_MS = 5 * 60 * 1000;
 const c4ThreadQueues = new Map();
+const loggedVoiceShapes = new Set();
 
 function createRateLimiter({ windowMs = 60_000, max = 60, maxKeys = 1000 } = {}) {
   const buckets = new Map();
@@ -408,10 +411,16 @@ function stripBotMention(text, data) {
   return result.replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
 }
 
-async function parseContent(content, { shouldDownload }) {
+async function parseContent(content, { shouldDownload, msgType }) {
   let text = '';
   let mediaPath = null;
   let mediaMetadata = null;
+  let voiceUrl = null;
+
+  if (msgType === 'chat.voice') {
+    voiceUrl = extractVoiceUrl(content);
+    return { text: '[voice message]', mediaPath, mediaMetadata, voiceUrl };
+  }
 
   if (typeof content === 'string') {
     text = content;
@@ -483,7 +492,7 @@ async function parseContent(content, { shouldDownload }) {
     text = '[unsupported message type]';
   }
 
-  return { text, mediaPath, mediaMetadata };
+  return { text, mediaPath, mediaMetadata, voiceUrl };
 }
 
 const DOWNLOAD_TIMEOUT_MS = 30000;
@@ -551,6 +560,89 @@ async function downloadUrl(url) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function logVoiceShapeOnce(content, reason) {
+  const shape = summarizeVoiceContentShape(content);
+  const key = `${reason}:${shape}`;
+  if (loggedVoiceShapes.has(key)) return;
+  loggedVoiceShapes.add(key);
+  if (loggedVoiceShapes.size > 100) {
+    loggedVoiceShapes.delete(loggedVoiceShapes.values().next().value);
+  }
+  console.warn(`[zalo-personal] Voice ${reason}; content shape: ${shape}`);
+}
+
+function voiceFileExtension(url) {
+  try {
+    const pathname = new URL(url).pathname;
+    const ext = path.extname(pathname).toLowerCase();
+    if (['.aac', '.m4a', '.mp3', '.ogg', '.wav', '.mp4'].includes(ext)) return ext;
+  } catch {}
+  return '.audio';
+}
+
+function scheduleVoiceTranscription({ voiceUrl, content, threadId, threadType, messageId, senderId, isGroup, groupName, userName }) {
+  setImmediate(async () => {
+    let voicePath = null;
+    try {
+      config = loadConfig();
+      const audio = await downloadUrl(voiceUrl);
+      if (!audio) {
+        logVoiceShapeOnce(content, 'download failed');
+        console.warn(`[zalo-personal] Voice download failed for ${messageId}`);
+        return;
+      }
+
+      const ext = voiceFileExtension(voiceUrl);
+      voicePath = path.join(MEDIA_DIR, `voice_${Date.now()}_${safeId(messageId)}${ext}`);
+      const tmpPath = `${voicePath}.tmp`;
+      fs.writeFileSync(tmpPath, audio, { mode: 0o600 });
+      fs.renameSync(tmpPath, voicePath);
+
+      const provider = getTranscriptionProvider(config.voiceTranscription, process.env, {
+        modelPath: config.whisperModel || process.env.WHISPER_MODEL
+      });
+      if (!provider.available) {
+        logVoiceShapeOnce(content, 'transcription unavailable');
+        console.warn(`[zalo-personal] Voice transcription unavailable for ${messageId}`);
+        return;
+      }
+
+      const transcript = await transcribeAudio(voicePath, {
+        mode: config.voiceTranscription,
+        modelPath: config.whisperModel || process.env.WHISPER_MODEL,
+        provider,
+      });
+      if (!transcript) return;
+
+      const text = `[Voice] ${transcript}`;
+      const transcriptMessageId = `voice:${messageId}`;
+      ensureReplay(threadId, config);
+      logAndRecord(threadId, {
+        timestamp: new Date().toISOString(),
+        message_id: transcriptMessageId,
+        user_id: senderId,
+        user_name: userName,
+        text: text.substring(0, 500)
+      }, config);
+
+      const endpoint = buildEndpoint(threadId, { messageId: transcriptMessageId, threadType });
+      const msg = formatMessage({
+        chatType: isGroup ? 'group' : 'dm',
+        groupName,
+        userName,
+        text,
+        contextMessages: null,
+        mediaPath: null,
+      });
+      sendToC4Queued(threadId, 'zalo-personal', endpoint, msg);
+    } catch (err) {
+      logVoiceShapeOnce(content, 'transcription failed');
+      console.error(`[zalo-personal] Voice transcription failed for ${messageId}: ${err.message}`);
+      try { if (voicePath) fs.unlinkSync(voicePath); } catch {}
+    }
+  });
 }
 
 async function handleMessage(message) {
@@ -652,10 +744,12 @@ async function handleMessage(message) {
   const smartNoMention = isGroup && groupMode === 'smart' && !mentioned;
   const shouldDownload = config.features?.download_media !== false && !smartNoMention;
 
-  let { text, mediaPath, mediaMetadata } = await parseContent(
+  let { text, mediaPath, mediaMetadata, voiceUrl } = await parseContent(
     data.content,
-    { shouldDownload }
+    { shouldDownload, msgType: data.msgType }
   );
+  const isVoice = isVoiceMessageData(data);
+  if (isVoice && !voiceUrl) logVoiceShapeOnce(data.content, 'URL not found');
 
   if (mentioned) text = stripBotMention(text, data);
 
@@ -733,6 +827,20 @@ async function handleMessage(message) {
     clearPendingThinking(correlationId);
     await api.sendMessage('Sorry, I could not process your message right now. Please try again.', threadId, threadType).catch(() => {});
   });
+
+  if (isVoice && voiceUrl && shouldDownload) {
+    scheduleVoiceTranscription({
+      voiceUrl,
+      content: data.content,
+      threadId,
+      threadType,
+      messageId,
+      senderId,
+      isGroup,
+      groupName,
+      userName
+    });
+  }
 }
 
 // ============================================================

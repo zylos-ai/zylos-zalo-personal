@@ -42,6 +42,8 @@ describe('config.js', () => {
       assert.equal(config.dmPolicy, 'owner');
       assert.equal(config.groupPolicy, 'allowlist');
       assert.equal(config.internal_port, 3463);
+      assert.equal(config.voiceTranscription, 'auto');
+      assert.equal(config.whisperModel, '');
       assert.deepEqual(config.dmAllowFrom, []);
       assert.deepEqual(config.groups, {});
       assert.deepEqual(config.features.inbound_rate_limit, { window_ms: 60000, max: 60 });
