@@ -5,7 +5,38 @@
  * Usage: node scripts/admin.js <command> [args]
  */
 
-import { loadConfig, saveConfig } from '../src/lib/config.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { loadConfig, saveConfig, DATA_DIR } from '../src/lib/config.js';
+
+// Call the running service's internal API (zca-js needs the live session).
+async function callService(action, chatId = '_') {
+  const config = loadConfig();
+  const port = config.internal_port || 3463;
+  let token;
+  try {
+    token = fs.readFileSync(path.join(DATA_DIR, 'sessions', '.internal-token'), 'utf8').trim();
+  } catch {
+    throw new Error('cannot read internal token — is the service running? (pm2 zylos-zalo-personal)');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/internal/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Token': token },
+      body: JSON.stringify({ chatId, action }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error(`service returned ${resp.status}`);
+    return resp.json();
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') throw new Error('service request timed out');
+    throw err;
+  }
+}
 
 const commands = {
   show: () => {
@@ -110,6 +141,45 @@ const commands = {
     console.log(`Denied ${userId}.`);
   },
 
+  'list-friends': async () => {
+    const { normalizeEntries } = await import('../src/lib/directory.js');
+    const res = await callService({ type: 'getAllFriends' });
+    const entries = normalizeEntries(res?.data);
+    if (!entries.length) { console.log('No friends found.'); return; }
+    console.log(`Friends (${entries.length}):`);
+    for (const e of entries) console.log(`  ${e.name || '(no name)'} — ${e.id}`);
+  },
+
+  'list-groups': async () => {
+    const { normalizeEntries } = await import('../src/lib/directory.js');
+    const res = await callService({ type: 'getAllGroups' });
+    const entries = normalizeEntries(res?.data);
+    if (!entries.length) { console.log('No groups found.'); return; }
+    console.log(`Groups (${entries.length}):`);
+    for (const e of entries) console.log(`  ${e.name || '(no name)'} — ${e.id}`);
+  },
+
+  resolve: async (...queryParts) => {
+    const query = queryParts.join(' ').trim();
+    if (!query) { console.error('Usage: admin.js resolve <name-or-id>'); process.exit(1); }
+    const { normalizeEntries, filterByName } = await import('../src/lib/directory.js');
+    const [friendsRes, groupsRes] = await Promise.all([
+      callService({ type: 'getAllFriends' }).catch(() => ({})),
+      callService({ type: 'getAllGroups' }).catch(() => ({})),
+    ]);
+    const friends = filterByName(normalizeEntries(friendsRes?.data), query);
+    const groups = filterByName(normalizeEntries(groupsRes?.data), query);
+    if (!friends.length && !groups.length) { console.log(`No friends or groups match "${query}".`); return; }
+    if (friends.length) {
+      console.log(`Friends matching "${query}" (${friends.length}):`);
+      for (const e of friends) console.log(`  ${e.name || '(no name)'} — ${e.id}`);
+    }
+    if (groups.length) {
+      console.log(`Groups matching "${query}" (${groups.length}):`);
+      for (const e of groups) console.log(`  ${e.name || '(no name)'} — ${e.id}`);
+    }
+  },
+
   doctor: async () => {
     const config = loadConfig();
     const { runDoctor, formatDoctorReport } = await import('../src/lib/doctor.js');
@@ -143,6 +213,11 @@ Commands:
   dm-pending                                    List pending access requests
   dm-approve <user_id>                          Approve a pending request
   dm-deny <user_id> [reason]                    Deny a request
+
+  Directory (requires running service):
+  list-friends                                  List friends (name — id)
+  list-groups                                   List groups (name — id)
+  resolve <name-or-id>                          Find friends/groups matching a query
 
   help                                          Show this help
 `);
