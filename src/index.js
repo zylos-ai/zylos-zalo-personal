@@ -29,6 +29,10 @@ import {
 import {
   isPrivateIp, isAllowedDownloadHost, isIpLikeHostname, validateUrlSyntax
 } from './lib/url-validator.js';
+import { loadSeenDmUsers, sendDmWelcomeIfFirstSeen } from './lib/dm-welcome.js';
+import {
+  getPairingStatus, markPairingPending, savePairingState, buildPairingNotification
+} from './lib/dm-pairing.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -40,6 +44,7 @@ fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(MEDIA_DIR, { recursive: true, mode: 0o700 });
 
 let config = loadConfig();
+const seenDmUsers = loadSeenDmUsers();
 
 function repairPermissions() {
   const configPath = path.join(DATA_DIR, 'config.json');
@@ -466,9 +471,30 @@ async function handleMessage(message) {
       return;
     }
     if (!isDmAllowed(config, senderId)) {
-      await api.sendMessage("Sorry, I'm not available. Please ask my admin for access.", threadId, threadType).catch(() => {});
+      if ((config.dmPolicy || 'owner') === 'pairing') {
+        if (getPairingStatus(senderId) === 'unknown') {
+          const firstMsg = typeof data?.content === 'string' ? data.content : '';
+          const state = markPairingPending({ userId: senderId, userName, chatId: threadId, firstMessage: firstMsg });
+          savePairingState(state);
+          sendToC4('zalo-personal', 'admin|type:dm-pairing', buildPairingNotification({
+            userId: senderId, userName, chatId: threadId, firstMessage: firstMsg
+          }));
+          await api.sendMessage('Thanks! Your request to chat has been sent to the admin for approval.', threadId, threadType).catch(() => {});
+        }
+        // pending/denied → drop silently (no spam)
+      } else {
+        await api.sendMessage("Sorry, I'm not available. Please ask my admin for access.", threadId, threadType).catch(() => {});
+      }
       return;
     }
+
+    await sendDmWelcomeIfFirstSeen({
+      send: (chatId, msg) => api.sendMessage(msg, chatId, threadType),
+      userId: senderId,
+      chatId: threadId,
+      message: config.dmWelcomeMessage,
+      seenUsers: seenDmUsers,
+    });
   }
 
   // Determine mention and mode for groups
