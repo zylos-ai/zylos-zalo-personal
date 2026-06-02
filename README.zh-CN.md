@@ -24,7 +24,8 @@
 ---
 
 - **Zalo 对话** — 你的 AI 智能体使用真实 Zalo 账号，支持私聊和群聊
-- **丰富媒体** — 收发图片、文件、贴纸、表情回应和输入状态指示
+- **丰富媒体** — 收发图片、文件、语音、贴纸、表情回应和输入状态指示
+- **语音转写** — 使用本地 Whisper 或 OpenAI API 备用路径转写收到的语音消息
 - **智能群组监控** — 自动关注指定群组的所有讨论，无需 @
 - **零配置启动** — 第一条消息自动绑定为管理员，无需繁琐设置
 - **二维码登录** — 用 Zalo 手机端扫码一次，会话跨重启保持
@@ -62,6 +63,11 @@ zylos add zylos-ai/zylos-zalo-personal
 或通过 CLI 管理：
 
 ```bash
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js doctor
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js set-dm-policy <open|allowlist|owner|pairing>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js dm-pending
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js dm-approve <user_id>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js resolve <name-or-id>
 zylos upgrade zalo-personal
 zylos uninstall zalo-personal
 ```
@@ -76,6 +82,33 @@ zylos uninstall zalo-personal
 | 管理员在未注册群 @机器人 | 自动注册群组 |
 | `groupPolicy: disabled` | 所有群消息屏蔽 |
 | 未知用户 | 忽略 |
+
+允许的群默认不限制出站/内部动作。可通过 `groups[groupId].allowedActions` 启用每群动作限制，例如 `["text", "reaction"]` 或 `["*"]`。
+
+## 发送格式
+
+v0.1.3 发布线默认对纯文本启用基础 Markdown 样式。将 `message.textMode` 设为 `"plain"` 可关闭。支持粗体、斜体、删除线、标题、引用、代码标记移除、链接归一化，以及有序/无序列表样式。Zalo 样式范围不能重叠，因此嵌套行内样式和列表行内强调会被展平成不重叠的范围。
+
+特殊发送前缀：
+
+| 前缀 | 行为 |
+|------|------|
+| `[MEDIA:image]/path/to/image.png` | 发送组件媒体/暂存目录中的图片 |
+| `[MEDIA:file]/path/to/file.pdf` | 发送组件媒体/暂存目录中的文件 |
+| `[MEDIA:voice]https://host/clip.aac` | 通过公开 URL 发送语音消息 |
+| `[MEDIA:sticker]<stickerId>[:<cateId>]` | 发送贴纸 |
+| `[LINK]https://host/page[|Title]` | 发送链接，可带标题 |
+| `[SKIP]` | 在 smart 模式中跳过回复并清除思考指示 |
+
+## 语音转写
+
+收到的语音消息会立即以 `[voice message]` 转发。`voiceTranscription` 为 `auto`、`local` 或 `api` 时，组件会通过安全的 Zalo 下载路径下载语音，并在转写成功后发送后续转写消息。设为 `disabled` 可保留仅占位符行为。
+
+本地模式会在配置了 `whisperModel` 或 `WHISPER_MODEL` 时检查 `~/zylos/bin/transcribe`、`whisper-cli` 或 `whisper`。API 模式需要 `OPENAI_API_KEY`。
+
+## 撤回与已读状态
+
+Zalo 撤回/删除所有人可见消息事件会通过 `undo` 监听器转发为提示消息。启用已读状态自动触发后，组件也可以通过 zca-js 内部 API 标记收到的消息为已送达/已读。
 
 ## 重要注意事项
 

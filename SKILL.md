@@ -4,10 +4,11 @@ version: 0.1.2
 description: >-
   Zalo personal account communication channel (unofficial, via zca-js).
   Uses a real Zalo account instead of the official Bot Platform API.
-  Supports: text, images, files, stickers, reactions, groups, typing indicators.
+  Supports: text, images, files, stickers, reactions, groups, typing indicators,
+  voice sends/transcription, links, quote-replies, and internal read receipts.
   Use when: (1) replying to Zalo personal messages (DM or group),
   (2) sending proactive messages or files to Zalo users or groups,
-  (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
+  (3) managing DM access control (dmPolicy: open/allowlist/owner/pairing, dmAllowFrom list),
   (4) managing group access control (groupPolicy, per-group allowFrom),
   (5) troubleshooting Zalo personal connection or QR login issues.
   Config at ~/zylos/components/zalo-personal/config.json. Service: pm2 zylos-zalo-personal.
@@ -59,8 +60,8 @@ QR code login required. On first start, the service generates a QR code URL.
 Scan it with the Zalo mobile app to authenticate. Session persists across restarts
 via saved credentials in `~/zylos/components/zalo-personal/sessions/`.
 
-Session requires hourly cookie refresh (handled automatically). QR re-login is
-needed if the session expires or is invalidated.
+The service sends a one-minute keep-alive while connected to keep the Zalo Web
+session active. QR re-login is needed if the session expires or is invalidated.
 
 ## Sending Messages
 
@@ -75,6 +76,13 @@ Or directly (for testing):
 ```bash
 node ~/zylos/.claude/skills/zalo-personal/scripts/send.js <user_id> "message"
 ```
+
+Text is sent with Markdown styling by default for the v0.1.3 release line.
+Set `message.textMode` to `"plain"` to opt out. Markdown support is intentionally
+basic: bold, italic, strikethrough, headings, quotes, code marker removal, link
+normalization, and ordered/unordered list styling. Zalo style ranges cannot
+overlap, so nested inline styles and inline emphasis inside styled list lines are
+flattened into non-overlapping ranges.
 
 ## Media Messages
 
@@ -93,11 +101,33 @@ EOF
 cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "zalo-personal" "<user_id>"
 [MEDIA:sticker]<sticker_id>
 EOF
+
+# Send voice by public URL
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "zalo-personal" "<user_id>"
+[MEDIA:voice]https://example.com/clip.aac
+EOF
+
+# Send link with optional title
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "zalo-personal" "<user_id>"
+[LINK]https://example.com|Example title
+EOF
+
+# Skip a smart-mode reply and clear the thinking indicator
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "zalo-personal" "<group_id>"
+[SKIP]
+EOF
 ```
 
 Inbound images and files are downloaded automatically and forwarded to C4 as
 file attachments. In smart mode without @mention, only metadata is forwarded
 (`[image, url: ...]` or `[file: name]`).
+
+Inbound voice messages are forwarded immediately as `[voice message]`. When
+`voiceTranscription` is `auto`, `local`, or `api`, a successful transcription is
+sent as a follow-up `[Voice] ...` message through C4.
+
+Inbound recall/delete-for-everyone events are surfaced through the zca-js `undo`
+listener as awareness messages such as `[recalled a message]`.
 
 ## Capabilities (vs Bot Platform)
 
@@ -113,6 +143,8 @@ file attachments. In smart mode without @mention, only metadata is forwarded
 | Read receipts | No | Internal API only |
 | Mentions | No | Yes |
 | Quote-reply | No | Yes |
+| Voice | No | Send + inbound transcription |
+| Links | No | Yes |
 
 ## Config Location
 
@@ -155,6 +187,7 @@ DM and group access are controlled by independent policies:
 2. `dmPolicy` = `open`? → anyone can DM
 3. `dmPolicy` = `owner`? → only owner can DM
 4. `dmPolicy` = `allowlist`? → check `dmAllowFrom` list; not in list → dropped
+5. `dmPolicy` = `pairing`? → unknown users are queued for owner/admin approval
 
 **Group message (groupPolicy):**
 1. `groupPolicy` = `disabled`? → all group messages dropped (including owner)
@@ -167,6 +200,7 @@ DM and group access are controlled by independent policies:
 - Owner bypasses allowlist checks only; `groupPolicy: disabled` blocks all group messages, including from owner
 - `dmPolicy` and `groupPolicy` are fully independent — changing one never affects the other
 - No user-level whitelist for groups; use per-group `allowFrom` to restrict senders
+- `dmPolicy: pairing` stores pending access requests; approve or deny them with the admin CLI
 
 ## Group Modes
 
@@ -193,7 +227,7 @@ Groups are stored in a map keyed by group id:
       "name": "Team Chat",
       "mode": "smart",
       "allowFrom": ["*"],
-      "added_at": "2026-01-01T00:00:00Z"
+      "allowedActions": ["text", "reaction"]
     }
   }
 }
@@ -201,3 +235,27 @@ Groups are stored in a map keyed by group id:
 
 - `mode`: `"mention"` (respond to @mentions only) or `"smart"` (receive all messages)
 - `allowFrom`: List of user IDs. `["*"]` = all group members allowed.
+- `allowedActions`: Optional outbound/internal action allowlist for group sends.
+  Missing config fails open; `["*"]` allows all actions; `[]` denies all actions.
+
+## Admin CLI
+
+```bash
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js show
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js doctor
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js set-dm-policy <open|allowlist|owner|pairing>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js add-dm-allow <user_id>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js remove-dm-allow <user_id>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js set-dm-welcome <message>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js show-dm-welcome
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js clear-dm-welcome
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js dm-pending
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js dm-approve <user_id>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js dm-deny <user_id> [reason]
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js list-friends
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js list-groups
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js resolve <name-or-id>
+```
+
+Directory commands require the running service because they call the active
+authenticated zca-js session through the internal API.

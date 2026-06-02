@@ -65,6 +65,11 @@ Just tell your Zylos agent what you need:
 Or manage via CLI:
 
 ```bash
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js doctor
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js set-dm-policy <open|allowlist|owner|pairing>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js dm-pending
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js dm-approve <user_id>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js resolve <name-or-id>
 zylos upgrade zalo-personal
 zylos uninstall zalo-personal
 ```
@@ -82,11 +87,30 @@ zylos uninstall zalo-personal
 
 For allowed groups, outbound/internal actions are fail-open by default. Add `groups[groupId].allowedActions` to opt in to per-group restrictions, for example `["text", "reaction"]` or `["*"]`.
 
+## Sending Formats
+
+Plain text is sent with basic Markdown styling by default for the v0.1.3 release line. Set `message.textMode` to `"plain"` to opt out. Supported formatting includes bold, italic, strikethrough, headings, quotes, code marker removal, link normalization, and ordered/unordered list styling. Zalo style ranges cannot overlap, so nested inline styles and inline emphasis inside styled list lines are flattened.
+
+Special send prefixes:
+
+| Prefix | Behavior |
+|--------|----------|
+| `[MEDIA:image]/path/to/image.png` | Send an image from component media/staging storage |
+| `[MEDIA:file]/path/to/file.pdf` | Send a file from component media/staging storage |
+| `[MEDIA:voice]https://host/clip.aac` | Send a voice message by public URL |
+| `[MEDIA:sticker]<stickerId>[:<cateId>]` | Send a sticker |
+| `[LINK]https://host/page[|Title]` | Send a link, optionally with title |
+| `[SKIP]` | Skip a smart-mode reply and clear the thinking indicator |
+
 ## Voice Transcription
 
 Inbound voice messages are forwarded immediately as `[voice message]`. When `voiceTranscription` is `auto`, `local`, or `api`, the component downloads voice audio through the same safe Zalo download path and sends a follow-up transcript if transcription succeeds. Set `voiceTranscription` to `disabled` to keep placeholder-only behavior.
 
 Local mode checks `~/zylos/bin/transcribe`, then `whisper-cli` or `whisper` when `whisperModel` or `WHISPER_MODEL` is configured. API mode requires `OPENAI_API_KEY`.
+
+## Recall And Read Status
+
+Zalo recall/delete-for-everyone events are forwarded as awareness messages through the `undo` listener. The component can also mark inbound messages delivered/seen through zca-js internal APIs when read-status auto-trigger support is enabled.
 
 ## Important Caveats
 
