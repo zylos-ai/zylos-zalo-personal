@@ -1,32 +1,47 @@
-import { saveConfig } from './config.js';
+import { loadConfig, saveConfig } from './config.js';
+
+let ownerBindInProgress = false;
 
 export function hasOwner(config) {
   return config.owner && config.owner.user_id !== null;
 }
 
 export function bindOwner(config, userId, userName) {
+  if (ownerBindInProgress) return false;
+  ownerBindInProgress = true;
   const prevOwner = config.owner ? { ...config.owner } : { user_id: null, name: null, bound_at: null };
   const prevDmAllowFrom = Array.isArray(config.dmAllowFrom) ? [...config.dmAllowFrom] : [];
 
-  config.owner = {
-    user_id: String(userId),
-    name: userName || null,
-    bound_at: new Date().toISOString()
-  };
-  if (!Array.isArray(config.dmAllowFrom)) config.dmAllowFrom = [];
-  if (!config.dmAllowFrom.includes(String(userId))) {
-    config.dmAllowFrom.push(String(userId));
-  }
+  try {
+    const latest = loadConfig();
+    if (hasOwner(latest)) {
+      config.owner = latest.owner;
+      config.dmAllowFrom = Array.isArray(latest.dmAllowFrom) ? [...latest.dmAllowFrom] : [];
+      return false;
+    }
 
-  if (!saveConfig(config)) {
-    config.owner = prevOwner;
-    config.dmAllowFrom = prevDmAllowFrom;
-    console.error(`[zalo-personal] Owner binding rolled back due to save failure`);
-    return false;
-  }
+    config.owner = {
+      user_id: String(userId),
+      name: userName || null,
+      bound_at: new Date().toISOString()
+    };
+    if (!Array.isArray(config.dmAllowFrom)) config.dmAllowFrom = [];
+    if (!config.dmAllowFrom.includes(String(userId))) {
+      config.dmAllowFrom.push(String(userId));
+    }
 
-  console.log(`[zalo-personal] Owner bound: ${userName || userId}`);
-  return true;
+    if (!saveConfig(config)) {
+      config.owner = prevOwner;
+      config.dmAllowFrom = prevDmAllowFrom;
+      console.error(`[zalo-personal] Owner binding rolled back due to save failure`);
+      return false;
+    }
+
+    console.log(`[zalo-personal] Owner bound: ${userName || userId}`);
+    return true;
+  } finally {
+    ownerBindInProgress = false;
+  }
 }
 
 export function isOwner(config, userId) {

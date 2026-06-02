@@ -18,6 +18,8 @@ for (const sub of ['logs', 'media', 'typing', 'sessions']) {
 
 const credPath = path.join(DATA_DIR, 'sessions', 'credentials.json');
 try { if (fs.existsSync(credPath)) fs.chmodSync(credPath, 0o600); } catch {}
+const internalTokenPath = path.join(DATA_DIR, 'sessions', '.internal-token');
+try { if (fs.existsSync(internalTokenPath)) fs.chmodSync(internalTokenPath, 0o600); } catch {}
 
 const logsDir = path.join(DATA_DIR, 'logs');
 try {
