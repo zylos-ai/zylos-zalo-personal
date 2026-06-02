@@ -591,9 +591,10 @@ async function handleMessage(message) {
     stopTyping(correlationId);
     clearPendingThinking(correlationId);
     await api.sendMessage(errMsg, threadId, threadType).catch(() => {});
-  }, () => {
+  }, async () => {
     stopTyping(correlationId);
     clearPendingThinking(correlationId);
+    await api.sendMessage('Sorry, I could not process your message right now. Please try again.', threadId, threadType).catch(() => {});
   });
 }
 
