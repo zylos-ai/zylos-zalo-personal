@@ -79,6 +79,36 @@ describe('config.js', () => {
       assert.equal(config.enabled, true);
       assert.equal(config.dmPolicy, 'owner');
     });
+
+    it('throttles repeated stat checks while cached', () => {
+      const configPath = path.join(dataDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ dmPolicy: 'owner' }));
+      const originalNow = Date.now;
+      const originalStatSync = fs.statSync;
+      let now = 1_000;
+      let statCalls = 0;
+      Date.now = () => now;
+      fs.statSync = function patchedStatSync(filePath, ...args) {
+        if (String(filePath) === configPath) statCalls += 1;
+        return originalStatSync.call(this, filePath, ...args);
+      };
+      try {
+        assert.equal(configModule.loadConfig().dmPolicy, 'owner');
+        fs.writeFileSync(configPath, JSON.stringify({ dmPolicy: 'open' }));
+        fs.utimesSync(configPath, new Date(3000), new Date(3000));
+
+        now = 1_500;
+        assert.equal(configModule.loadConfig().dmPolicy, 'owner');
+        assert.equal(statCalls, 1);
+
+        now = 2_500;
+        assert.equal(configModule.loadConfig().dmPolicy, 'open');
+        assert.equal(statCalls, 2);
+      } finally {
+        Date.now = originalNow;
+        fs.statSync = originalStatSync;
+      }
+    });
   });
 
   describe('saveConfig', () => {
@@ -97,6 +127,16 @@ describe('config.js', () => {
       const configPath = path.join(dataDir, 'config.json');
       const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       assert.equal(saved.version, 2);
+    });
+
+    it('clears the read cache after saving', () => {
+      const configPath = path.join(dataDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ dmPolicy: 'owner' }));
+      assert.equal(configModule.loadConfig().dmPolicy, 'owner');
+
+      configModule.saveConfig({ dmPolicy: 'open' });
+
+      assert.equal(configModule.loadConfig().dmPolicy, 'open');
     });
   });
 });
