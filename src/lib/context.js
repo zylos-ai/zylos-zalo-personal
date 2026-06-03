@@ -120,7 +120,7 @@ export function getHistory(chatId, excludeMessageId, config) {
 }
 
 export function formatMessage(opts) {
-  const { chatType, groupName, userName, text, contextMessages, mediaPath, smartHint } = opts;
+  const { chatType, groupName, userName, text, contextMessages, mediaPath, smartHint, wasMentioned, groupMembers, replyTo } = opts;
 
   let prefix;
   if (chatType === 'dm') {
@@ -142,6 +142,24 @@ You are observing this group in smart mode. Only respond if the message is direc
       `[${escapeXml(m.user_name || String(m.user_id))}]: ${escapeXml(m.text)}`
     ).join('\n');
     parts.push(`<group-context>\n${contextLines}\n</group-context>\n\n`);
+  }
+
+  if (chatType === 'group') {
+    parts.push(`<was-mentioned>${wasMentioned === true ? 'true' : 'false'}</was-mentioned>\n\n`);
+  }
+
+  if (chatType === 'group' && groupMembers?.names?.length) {
+    const total = Number(groupMembers.total || groupMembers.names.length);
+    const names = groupMembers.names.map(name => escapeXml(name)).join(', ');
+    parts.push(`<group-members total="${escapeXml(total)}" shown="${escapeXml(groupMembers.names.length)}">${names}</group-members>\n\n`);
+  }
+
+  if (replyTo?.messageId) {
+    const attrs = [
+      `message-id="${escapeXml(replyTo.messageId)}"`,
+    ];
+    if (replyTo.fromUserId) attrs.push(`from-user-id="${escapeXml(replyTo.fromUserId)}"`);
+    parts.push(`<reply-to ${attrs.join(' ')}>${escapeXml(replyTo.body || '')}</reply-to>\n\n`);
   }
 
   parts.push(`<current-message>\n${escapeXml(text)}\n</current-message>`);

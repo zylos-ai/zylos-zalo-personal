@@ -48,6 +48,8 @@ import { requestPinned } from './lib/pinned-request.js';
 import {
   cleanupMediaTree, sweepTimestampCache, truncateLogFileAtomic, unlinkQuiet
 } from './lib/resource-lifecycle.js';
+import { createGroupMembersCache, getGroupMembers } from './lib/group-members.js';
+import { buildReplyTo, cacheKeysForMessage, cacheRecordFromMessage } from './lib/reply-to.js';
 import { safeId } from './lib/ids.js';
 
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -327,6 +329,7 @@ const typingPollInterval = setInterval(() => {
     maxSize: USER_NAME_CACHE_MAX_SIZE,
     now,
   });
+  groupMembersCache.sweep(now);
 }, 30000);
 typingPollInterval.unref?.();
 
@@ -357,21 +360,15 @@ function buildEndpoint(threadId, { messageId, threadType } = {}) {
 
 const userNameCache = new Map();
 const messageCache = new Map();
+const groupMembersCache = createGroupMembersCache();
 const USER_NAME_CACHE_TTL_MS = 10 * 60 * 1000;
 const USER_NAME_CACHE_MAX_SIZE = 1000;
 
 function cacheMessage(msgId, data) {
-  messageCache.set(String(msgId), {
-    msgId: data.msgId,
-    cliMsgId: data.cliMsgId,
-    uidFrom: data.uidFrom,
-    msgType: data.msgType || 'webchat',
-    ts: data.ts,
-    content: data.content,
-    ttl: data.ttl || 0,
-    cachedAt: Date.now()
-  });
-  if (messageCache.size > 200) {
+  const record = cacheRecordFromMessage(data);
+  const keys = new Set([msgId, ...cacheKeysForMessage(data)].filter(v => v !== undefined && v !== null).map(String));
+  for (const key of keys) messageCache.set(key, record);
+  while (messageCache.size > 200) {
     const firstKey = messageCache.keys().next().value;
     messageCache.delete(firstKey);
   }
@@ -405,6 +402,15 @@ async function getGroupName(groupId) {
     if (group?.name) return group.name;
   } catch {}
   return String(groupId);
+}
+
+async function getGroupMembersSummary(groupId) {
+  try {
+    return await getGroupMembers(api, groupId, { cache: groupMembersCache, limit: 20 });
+  } catch (err) {
+    console.warn(`[zalo-personal] Group member summary unavailable for ${groupId}: ${err.message}`);
+    return null;
+  }
 }
 
 function isAuthorizedInboundEvent(threadId, senderId, isGroup) {
@@ -915,6 +921,8 @@ async function handleMessage(message) {
     groupName = await getGroupName(threadId);
     contextMessages = getHistory(threadId, messageId, config);
   }
+  const groupMembers = isGroup ? await getGroupMembersSummary(threadId) : null;
+  const replyTo = buildReplyTo(data, messageCache);
 
   // In smart mode without @mention, append metadata instead of file path
   let displayText = text;
@@ -929,7 +937,10 @@ async function handleMessage(message) {
     text: displayText,
     contextMessages: isGroup ? contextMessages : null,
     mediaPath: smartNoMention ? null : mediaPath,
-    smartHint: smartNoMention
+    smartHint: smartNoMention,
+    wasMentioned: isGroup ? mentioned : undefined,
+    groupMembers,
+    replyTo
   });
 
   sendToC4Queued(threadId, 'zalo-personal', endpoint, msg, async (errMsg) => {

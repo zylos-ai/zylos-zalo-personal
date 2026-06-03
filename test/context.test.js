@@ -61,6 +61,78 @@ describe('context.js', () => {
       assert.ok(msg.includes('[Zalo GROUP:Test Group]'));
       assert.ok(msg.includes('Felix said:'));
       assert.ok(msg.includes('hi everyone'));
+      assert.ok(msg.includes('<was-mentioned>false</was-mentioned>'));
+    });
+
+    it('includes was-mentioned for group messages only', () => {
+      const groupMsg = contextModule.formatMessage({
+        chatType: 'group',
+        groupName: 'Test Group',
+        userName: 'Felix',
+        text: 'hey bot',
+        contextMessages: null,
+        mediaPath: null,
+        wasMentioned: true,
+      });
+      assert.ok(groupMsg.includes('<was-mentioned>true</was-mentioned>'));
+      assert.ok(groupMsg.indexOf('<was-mentioned>true</was-mentioned>') < groupMsg.indexOf('<current-message>'));
+
+      const dmMsg = contextModule.formatMessage({
+        chatType: 'dm',
+        userName: 'Felix',
+        text: 'hey bot',
+        contextMessages: null,
+        mediaPath: null,
+        wasMentioned: true,
+      });
+      assert.ok(!dmMsg.includes('<was-mentioned>'));
+    });
+
+    it('includes group member names for group messages only', () => {
+      const groupMsg = contextModule.formatMessage({
+        chatType: 'group',
+        groupName: 'Test Group',
+        userName: 'Felix',
+        text: 'hello',
+        contextMessages: null,
+        mediaPath: null,
+        groupMembers: {
+          names: ['Alice', 'Bob & Carol'],
+          total: 3,
+        },
+      });
+      assert.ok(groupMsg.includes('<group-members total="3" shown="2">Alice, Bob &amp; Carol</group-members>'));
+      assert.ok(groupMsg.indexOf('<group-members') < groupMsg.indexOf('<current-message>'));
+
+      const dmMsg = contextModule.formatMessage({
+        chatType: 'dm',
+        userName: 'Felix',
+        text: 'hello',
+        contextMessages: null,
+        mediaPath: null,
+        groupMembers: {
+          names: ['Alice'],
+          total: 1,
+        },
+      });
+      assert.ok(!dmMsg.includes('<group-members'));
+    });
+
+    it('includes reply metadata before the current message', () => {
+      const msg = contextModule.formatMessage({
+        chatType: 'dm',
+        userName: 'Felix',
+        text: 'reply text',
+        contextMessages: null,
+        mediaPath: null,
+        replyTo: {
+          messageId: 'global-1',
+          fromUserId: 'u1',
+          body: 'quoted & short',
+        },
+      });
+      assert.ok(msg.includes('<reply-to message-id="global-1" from-user-id="u1">quoted &amp; short</reply-to>'));
+      assert.ok(msg.indexOf('<reply-to') < msg.indexOf('<current-message>'));
     });
 
     it('includes group context messages', () => {

@@ -87,18 +87,27 @@ function buildEndpoint(threadId, { messageId, threadType } = {}) {
 
 function createMessageCache(maxSize = 200) {
   const cache = new Map();
+  function cacheKeys(data = {}) {
+    return [
+      data.globalMsgId,
+      data.msgId,
+      data.cliMsgId,
+    ].filter(v => v !== undefined && v !== null).map(String);
+  }
   return {
     set(msgId, data) {
-      cache.set(String(msgId), {
+      const record = {
         msgId: data.msgId,
+        globalMsgId: data.globalMsgId,
         cliMsgId: data.cliMsgId,
         uidFrom: data.uidFrom,
         msgType: data.msgType || 'webchat',
         ts: data.ts,
         content: data.content,
         ttl: data.ttl || 0
-      });
-      if (cache.size > maxSize) {
+      };
+      for (const key of new Set([msgId, ...cacheKeys(data)].map(String))) cache.set(key, record);
+      while (cache.size > maxSize) {
         const firstKey = cache.keys().next().value;
         cache.delete(firstKey);
       }
@@ -505,6 +514,18 @@ describe('messageCache', () => {
     cache.set(123, { msgId: 123, content: 'test' });
     assert.ok(cache.get('123'));
     assert.ok(cache.get(123));
+  });
+
+  it('indexes by globalMsgId and cliMsgId for quote lookup', () => {
+    const cache = createMessageCache();
+    cache.set('msg1', {
+      msgId: 'msg1',
+      globalMsgId: 'global1',
+      cliMsgId: 'cli1',
+      content: 'quoted',
+    });
+    assert.equal(cache.get('global1').content, 'quoted');
+    assert.equal(cache.get('cli1').content, 'quoted');
   });
 });
 
