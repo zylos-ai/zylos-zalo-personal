@@ -52,6 +52,14 @@ import { createGroupMembersCache, getGroupMembers } from './lib/group-members.js
 import { buildReplyTo, cacheKeysForMessage, cacheRecordFromMessage } from './lib/reply-to.js';
 import { safeId } from './lib/ids.js';
 
+const VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  } catch {
+    return 'unknown';
+  }
+})();
+
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
@@ -1488,7 +1496,7 @@ runCleanup();
 // ============================================================
 
 async function main() {
-  console.log('[zalo-personal] Starting zylos-zalo-personal v0.1.1...');
+  console.log(`[zalo-personal] Starting zylos-zalo-personal v${VERSION}...`);
   console.log(`[zalo-personal] Data directory: ${DATA_DIR}`);
 
   if (!config.enabled) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7] - 2026-06-03
+
+### Fixed
+- Startup log now reports the actual package version (read from `package.json`)
+  instead of a hardcoded `0.1.1` string, which always misreported the version
+  in the live log regardless of the real release.
+
 ## [0.1.6] - 2026-06-03
 
 ### Changed
