@@ -10,15 +10,25 @@ import path from 'node:path';
 import { loadConfig, saveConfig, DATA_DIR } from '../src/lib/config.js';
 
 // Call the running service's internal API (zca-js needs the live session).
-async function callService(action, chatId = '_') {
+function getServiceConnection() {
   const config = loadConfig();
   const port = config.internal_port || 3463;
+  return { port };
+}
+
+function readInternalToken() {
   let token;
   try {
     token = fs.readFileSync(path.join(DATA_DIR, 'sessions', '.internal-token'), 'utf8').trim();
   } catch {
     throw new Error('cannot read internal token — is the service running? (pm2 zylos-zalo-personal)');
   }
+  return token;
+}
+
+async function callService(action, chatId = '_') {
+  const { port } = getServiceConnection();
+  const token = readInternalToken();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
@@ -31,6 +41,33 @@ async function callService(action, chatId = '_') {
     clearTimeout(timer);
     if (!resp.ok) throw new Error(`service returned ${resp.status}`);
     return resp.json();
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') throw new Error('service request timed out');
+    throw err;
+  }
+}
+
+async function callServiceGet(pathAndQuery) {
+  const { port } = getServiceConnection();
+  const token = readInternalToken();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}${pathAndQuery}`, {
+      method: 'GET',
+      headers: { 'X-Internal-Token': token },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const text = await resp.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch {}
+    if (!resp.ok) {
+      const detail = body?.error ? `: ${body.error}` : '';
+      throw new Error(`service returned ${resp.status}${detail}`);
+    }
+    return body;
   } catch (err) {
     clearTimeout(timer);
     if (err.name === 'AbortError') throw new Error('service request timed out');
@@ -180,6 +217,24 @@ const commands = {
     }
   },
 
+  'group-info': async (threadId) => {
+    threadId = String(threadId || '').trim();
+    if (!threadId) { console.error('Usage: admin.js group-info <threadId>'); process.exit(1); }
+    const res = await callServiceGet(`/internal/group-info?threadId=${encodeURIComponent(threadId)}`);
+    if (!res?.ok) throw new Error(res?.error || 'group-info failed');
+    const names = Array.isArray(res.names) ? res.names : [];
+    const total = Number.isFinite(Number(res.total)) ? Number(res.total) : names.length;
+    if (!names.length) {
+      console.log(`Group ${threadId}: no member names returned${total ? ` (total ${total})` : ''}.`);
+      return;
+    }
+    console.log(`Group ${threadId} members (${names.length}/${total}):`);
+    for (const name of names) console.log(`  ${name}`);
+    if (res.capped && total > names.length) {
+      console.log(`  ... ${total - names.length} more`);
+    }
+  },
+
   doctor: async () => {
     const config = loadConfig();
     const { runDoctor, formatDoctorReport } = await import('../src/lib/doctor.js');
@@ -218,6 +273,7 @@ Commands:
   list-friends                                  List friends (name — id)
   list-groups                                   List groups (name — id)
   resolve <name-or-id>                          Find friends/groups matching a query
+  group-info <threadId>                         Show group member names
 
   help                                          Show this help
 `);

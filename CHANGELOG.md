@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.6] - 2026-06-03
+
+### Changed
+- Rename inbound quote metadata from `<reply-to>` to `<replying-to>` while
+  preserving message and sender id attributes.
+- Remove per-message `<was-mentioned>` and `<group-members>` tags from inbound
+  group envelopes.
+- Stop fetching Zalo group member summaries for every inbound group message.
+
+### Added
+- Add authenticated on-demand `/internal/group-info` and
+  `scripts/admin.js group-info <threadId>` for live group member lookup.
+
 ## [0.1.5] - 2026-06-03
 
 ### Added
