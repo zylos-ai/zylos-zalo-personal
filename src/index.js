@@ -49,6 +49,7 @@ import {
   cleanupMediaTree, sweepTimestampCache, truncateLogFileAtomic, unlinkQuiet
 } from './lib/resource-lifecycle.js';
 import { createGroupMembersCache, getGroupMembers } from './lib/group-members.js';
+import { buildReplyTo, cacheKeysForMessage, cacheRecordFromMessage } from './lib/reply-to.js';
 import { safeId } from './lib/ids.js';
 
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -364,17 +365,10 @@ const USER_NAME_CACHE_TTL_MS = 10 * 60 * 1000;
 const USER_NAME_CACHE_MAX_SIZE = 1000;
 
 function cacheMessage(msgId, data) {
-  messageCache.set(String(msgId), {
-    msgId: data.msgId,
-    cliMsgId: data.cliMsgId,
-    uidFrom: data.uidFrom,
-    msgType: data.msgType || 'webchat',
-    ts: data.ts,
-    content: data.content,
-    ttl: data.ttl || 0,
-    cachedAt: Date.now()
-  });
-  if (messageCache.size > 200) {
+  const record = cacheRecordFromMessage(data);
+  const keys = new Set([msgId, ...cacheKeysForMessage(data)].filter(v => v !== undefined && v !== null).map(String));
+  for (const key of keys) messageCache.set(key, record);
+  while (messageCache.size > 200) {
     const firstKey = messageCache.keys().next().value;
     messageCache.delete(firstKey);
   }
@@ -928,6 +922,7 @@ async function handleMessage(message) {
     contextMessages = getHistory(threadId, messageId, config);
   }
   const groupMembers = isGroup ? await getGroupMembersSummary(threadId) : null;
+  const replyTo = buildReplyTo(data, messageCache);
 
   // In smart mode without @mention, append metadata instead of file path
   let displayText = text;
@@ -944,7 +939,8 @@ async function handleMessage(message) {
     mediaPath: smartNoMention ? null : mediaPath,
     smartHint: smartNoMention,
     wasMentioned: isGroup ? mentioned : undefined,
-    groupMembers
+    groupMembers,
+    replyTo
   });
 
   sendToC4Queued(threadId, 'zalo-personal', endpoint, msg, async (errMsg) => {

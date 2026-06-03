@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.5] - 2026-06-03
+
+### Added
+- Add group-only `<was-mentioned>` metadata to inbound C4 envelopes.
+- Add cached, non-blocking group member summaries capped at 20 display names
+  for inbound group envelopes.
+- Add inbound reply metadata from quoted Zalo messages, including quote message
+  id, sender id, and a 100-character quoted body preview.
+
 ## [0.1.4] - 2026-06-03
 
 ### Added

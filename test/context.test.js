@@ -118,6 +118,23 @@ describe('context.js', () => {
       assert.ok(!dmMsg.includes('<group-members'));
     });
 
+    it('includes reply metadata before the current message', () => {
+      const msg = contextModule.formatMessage({
+        chatType: 'dm',
+        userName: 'Felix',
+        text: 'reply text',
+        contextMessages: null,
+        mediaPath: null,
+        replyTo: {
+          messageId: 'global-1',
+          fromUserId: 'u1',
+          body: 'quoted & short',
+        },
+      });
+      assert.ok(msg.includes('<reply-to message-id="global-1" from-user-id="u1">quoted &amp; short</reply-to>'));
+      assert.ok(msg.indexOf('<reply-to') < msg.indexOf('<current-message>'));
+    });
+
     it('includes group context messages', () => {
       const msg = contextModule.formatMessage({
         chatType: 'group',
