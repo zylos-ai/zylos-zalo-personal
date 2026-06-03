@@ -17,7 +17,7 @@ import path from 'path';
 import dns from 'dns/promises';
 import { Zalo, LoginQRCallbackEventType, ThreadType, Reactions } from 'zca-js';
 
-import { loadConfig, DATA_DIR } from './lib/config.js';
+import { loadConfig, saveConfig, DATA_DIR } from './lib/config.js';
 import {
   hasOwner, bindOwner, isOwner, isDmAllowed,
   isGroupAllowed, isGroupSenderAllowed, getGroupConfig, getGroupMode, isGroupActionAllowed, registerGroup
@@ -32,6 +32,12 @@ import { loadSeenDmUsers, sendDmWelcomeIfFirstSeen } from './lib/dm-welcome.js';
 import {
   loadPairingState, getPairingStatus, markPairingPending, savePairingState, buildPairingNotification
 } from './lib/dm-pairing.js';
+import {
+  applyOwnerPairingCommand,
+  ownerPairingReplyFor,
+  resolveOwnerPairingCommandForSender,
+  sendOwnerPairingDm
+} from './lib/pairing-owner.js';
 import {
   buildUndoAwarenessText, getUndoActorId, getUndoCacheKeys,
   getUndoDeletedMessageId, getUndoThreadId
@@ -691,6 +697,60 @@ function scheduleVoiceTranscription({ voiceUrl, content, threadId, threadType, m
   });
 }
 
+function firstMessageText(content) {
+  return typeof content === 'string' ? content : '';
+}
+
+async function notifyPairingOwner({ config, userId, userName, firstMessage }) {
+  await sendOwnerPairingDm({
+    config,
+    userId,
+    userName,
+    firstMessage,
+    send: (ownerId, message) => api.sendMessage(message, ownerId, ThreadType.User)
+  }).catch((err) => {
+    console.warn(`[zalo-personal] Failed to notify owner about pairing request ${userId}: ${err.message}`);
+  });
+}
+
+async function handleOwnerPairingCommand({ config, senderId, threadId, threadType, text }) {
+  const pairingState = loadPairingState();
+  const resolved = resolveOwnerPairingCommandForSender(config, senderId, text, pairingState);
+  if (!resolved) return false;
+
+  if (resolved.needsUserId || resolved.missing) {
+    await api.sendMessage(ownerPairingReplyFor(resolved), threadId, threadType).catch(() => {});
+    return true;
+  }
+
+  const previousDmAllowFrom = Array.isArray(config.dmAllowFrom) ? [...config.dmAllowFrom] : config.dmAllowFrom;
+  const previousPending = { ...(pairingState.pending || {}) };
+  const previousDenied = { ...(pairingState.denied || {}) };
+
+  if (!applyOwnerPairingCommand(config, pairingState, resolved)) {
+    await api.sendMessage(`No pending request for ${resolved.userId}.`, threadId, threadType).catch(() => {});
+    return true;
+  }
+
+  if (!saveConfig(config)) {
+    config.dmAllowFrom = previousDmAllowFrom;
+    pairingState.pending = previousPending;
+    pairingState.denied = previousDenied;
+    await api.sendMessage('Could not update pairing access. Please try again.', threadId, threadType).catch(() => {});
+    return true;
+  }
+  savePairingState(pairingState);
+
+  await api.sendMessage(ownerPairingReplyFor(resolved), threadId, threadType).catch(() => {});
+  if (resolved.action === 'approve') {
+    const chatId = resolved.request.chat_id || resolved.userId;
+    await api.sendMessage('You can chat with me now.', chatId, ThreadType.User).catch((err) => {
+      console.warn(`[zalo-personal] Failed to notify approved pairing user ${resolved.userId}: ${err.message}`);
+    });
+  }
+  return true;
+}
+
 async function handleMessage(message) {
   if (message.isSelf) return;
   config = loadConfig();
@@ -729,16 +789,26 @@ async function handleMessage(message) {
       }
       return;
     }
+    if (await handleOwnerPairingCommand({
+      config,
+      senderId,
+      threadId,
+      threadType,
+      text: firstMessageText(data?.content)
+    })) {
+      return;
+    }
     if (!isDmAllowed(config, senderId)) {
       if ((config.dmPolicy || 'owner') === 'pairing') {
         const pairingState = loadPairingState();
         if (getPairingStatus(senderId, pairingState) === 'unknown') {
-          const firstMsg = typeof data?.content === 'string' ? data.content : '';
+          const firstMsg = firstMessageText(data?.content);
           markPairingPending({ userId: senderId, userName: eventUserName, chatId: threadId, firstMessage: firstMsg }, pairingState);
           savePairingState(pairingState);
           sendToC4('zalo-personal', 'admin|type:dm-pairing', buildPairingNotification({
             userId: senderId, userName: eventUserName, chatId: threadId, firstMessage: firstMsg
           }));
+          await notifyPairingOwner({ config, userId: senderId, userName: eventUserName, firstMessage: firstMsg });
           await api.sendMessage('Thanks! Your request to chat has been sent to the admin for approval.', threadId, threadType).catch(() => {});
         }
         // pending/denied → drop silently (no spam)

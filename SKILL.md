@@ -1,6 +1,6 @@
 ---
 name: zalo-personal
-version: 0.1.3
+version: 0.1.4
 description: >-
   Zalo personal account communication channel (unofficial, via zca-js).
   Uses a real Zalo account instead of the official Bot Platform API.
@@ -77,7 +77,7 @@ Or directly (for testing):
 node ~/zylos/.claude/skills/zalo-personal/scripts/send.js <user_id> "message"
 ```
 
-Text is sent with Markdown styling by default for the v0.1.3 release line.
+Text is sent with Markdown styling by default for the v0.1.4 release line.
 Set `message.textMode` to `"plain"` to opt out. Markdown support is intentionally
 basic: bold, italic, strikethrough, headings, quotes, code marker removal, link
 normalization, and ordered/unordered list styling. Zalo style ranges cannot
@@ -200,7 +200,7 @@ DM and group access are controlled by independent policies:
 - Owner bypasses allowlist checks only; `groupPolicy: disabled` blocks all group messages, including from owner
 - `dmPolicy` and `groupPolicy` are fully independent — changing one never affects the other
 - No user-level whitelist for groups; use per-group `allowFrom` to restrict senders
-- `dmPolicy: pairing` stores pending access requests; approve or deny them with the admin CLI
+- `dmPolicy: pairing` stores pending access requests; the owner can reply `approve` or `deny` in their Zalo DM, and the admin CLI remains available as a fallback
 
 ## Group Modes
 
@@ -259,3 +259,10 @@ node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js resolve <name-or-id>
 
 Directory commands require the running service because they call the active
 authenticated zca-js session through the internal API.
+
+When `dmPolicy` is `pairing`, unknown DM users are queued as pending requests,
+the existing C4 admin notification is sent, and the bound owner also receives a
+direct Zalo DM with the request details. The owner can reply with exact whole
+messages `approve` or `deny`; if more than one request is pending, use
+`approve <user_id>` or `deny <user_id>`. Non-owner messages are not treated as
+pairing commands, and the admin CLI commands above remain the fallback path.
