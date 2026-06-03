@@ -88,6 +88,36 @@ describe('context.js', () => {
       assert.ok(!dmMsg.includes('<was-mentioned>'));
     });
 
+    it('includes group member names for group messages only', () => {
+      const groupMsg = contextModule.formatMessage({
+        chatType: 'group',
+        groupName: 'Test Group',
+        userName: 'Felix',
+        text: 'hello',
+        contextMessages: null,
+        mediaPath: null,
+        groupMembers: {
+          names: ['Alice', 'Bob & Carol'],
+          total: 3,
+        },
+      });
+      assert.ok(groupMsg.includes('<group-members total="3" shown="2">Alice, Bob &amp; Carol</group-members>'));
+      assert.ok(groupMsg.indexOf('<group-members') < groupMsg.indexOf('<current-message>'));
+
+      const dmMsg = contextModule.formatMessage({
+        chatType: 'dm',
+        userName: 'Felix',
+        text: 'hello',
+        contextMessages: null,
+        mediaPath: null,
+        groupMembers: {
+          names: ['Alice'],
+          total: 1,
+        },
+      });
+      assert.ok(!dmMsg.includes('<group-members'));
+    });
+
     it('includes group context messages', () => {
       const msg = contextModule.formatMessage({
         chatType: 'group',

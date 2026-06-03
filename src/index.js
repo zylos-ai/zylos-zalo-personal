@@ -48,6 +48,7 @@ import { requestPinned } from './lib/pinned-request.js';
 import {
   cleanupMediaTree, sweepTimestampCache, truncateLogFileAtomic, unlinkQuiet
 } from './lib/resource-lifecycle.js';
+import { createGroupMembersCache, getGroupMembers } from './lib/group-members.js';
 import { safeId } from './lib/ids.js';
 
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -327,6 +328,7 @@ const typingPollInterval = setInterval(() => {
     maxSize: USER_NAME_CACHE_MAX_SIZE,
     now,
   });
+  groupMembersCache.sweep(now);
 }, 30000);
 typingPollInterval.unref?.();
 
@@ -357,6 +359,7 @@ function buildEndpoint(threadId, { messageId, threadType } = {}) {
 
 const userNameCache = new Map();
 const messageCache = new Map();
+const groupMembersCache = createGroupMembersCache();
 const USER_NAME_CACHE_TTL_MS = 10 * 60 * 1000;
 const USER_NAME_CACHE_MAX_SIZE = 1000;
 
@@ -405,6 +408,15 @@ async function getGroupName(groupId) {
     if (group?.name) return group.name;
   } catch {}
   return String(groupId);
+}
+
+async function getGroupMembersSummary(groupId) {
+  try {
+    return await getGroupMembers(api, groupId, { cache: groupMembersCache, limit: 20 });
+  } catch (err) {
+    console.warn(`[zalo-personal] Group member summary unavailable for ${groupId}: ${err.message}`);
+    return null;
+  }
 }
 
 function isAuthorizedInboundEvent(threadId, senderId, isGroup) {
@@ -915,6 +927,7 @@ async function handleMessage(message) {
     groupName = await getGroupName(threadId);
     contextMessages = getHistory(threadId, messageId, config);
   }
+  const groupMembers = isGroup ? await getGroupMembersSummary(threadId) : null;
 
   // In smart mode without @mention, append metadata instead of file path
   let displayText = text;
@@ -930,7 +943,8 @@ async function handleMessage(message) {
     contextMessages: isGroup ? contextMessages : null,
     mediaPath: smartNoMention ? null : mediaPath,
     smartHint: smartNoMention,
-    wasMentioned: isGroup ? mentioned : undefined
+    wasMentioned: isGroup ? mentioned : undefined,
+    groupMembers
   });
 
   sendToC4Queued(threadId, 'zalo-personal', endpoint, msg, async (errMsg) => {
