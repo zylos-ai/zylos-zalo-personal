@@ -120,7 +120,7 @@ export function getHistory(chatId, excludeMessageId, config) {
 }
 
 export function formatMessage(opts) {
-  const { chatType, groupName, userName, text, contextMessages, mediaPath, smartHint } = opts;
+  const { chatType, groupName, userName, text, contextMessages, mediaPath, smartHint, wasMentioned } = opts;
 
   let prefix;
   if (chatType === 'dm') {
@@ -142,6 +142,10 @@ You are observing this group in smart mode. Only respond if the message is direc
       `[${escapeXml(m.user_name || String(m.user_id))}]: ${escapeXml(m.text)}`
     ).join('\n');
     parts.push(`<group-context>\n${contextLines}\n</group-context>\n\n`);
+  }
+
+  if (chatType === 'group') {
+    parts.push(`<was-mentioned>${wasMentioned === true ? 'true' : 'false'}</was-mentioned>\n\n`);
   }
 
   parts.push(`<current-message>\n${escapeXml(text)}\n</current-message>`);

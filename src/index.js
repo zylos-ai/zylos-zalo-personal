@@ -929,7 +929,8 @@ async function handleMessage(message) {
     text: displayText,
     contextMessages: isGroup ? contextMessages : null,
     mediaPath: smartNoMention ? null : mediaPath,
-    smartHint: smartNoMention
+    smartHint: smartNoMention,
+    wasMentioned: isGroup ? mentioned : undefined
   });
 
   sendToC4Queued(threadId, 'zalo-personal', endpoint, msg, async (errMsg) => {
