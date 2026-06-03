@@ -37,7 +37,10 @@ before(async () => {
   const tmpDir = fs.mkdtempSync(path.join('/tmp', 'zalo-test-'));
 
   server = http.createServer((req, res) => {
-    if (req.url.startsWith('/internal/')) {
+    const requestUrl = new URL(req.url, 'http://127.0.0.1');
+    const requestPath = requestUrl.pathname;
+
+    if (requestPath.startsWith('/internal/')) {
       const token = req.headers['x-internal-token'];
       if (!timingSafeTokenEqual(token, TEST_TOKEN)) {
         res.writeHead(403).end('forbidden');
@@ -45,14 +48,14 @@ before(async () => {
       }
     }
 
-    if (req.method === 'GET' && req.url === '/internal/status') {
+    if (req.method === 'GET' && requestPath === '/internal/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
         connected: true, wsHealthy: true, uptime: 123
       }));
       return;
     }
 
-    if (req.method === 'GET' && req.url === '/internal/qr') {
+    if (req.method === 'GET' && requestPath === '/internal/qr') {
       const qrPath = path.join(tmpDir, 'qr.png');
       if (fs.existsSync(qrPath)) {
         res.writeHead(200, { 'Content-Type': 'image/png' });
@@ -63,7 +66,24 @@ before(async () => {
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/internal/record-outgoing') {
+    if (req.method === 'GET' && requestPath === '/internal/group-info') {
+      res.setHeader('Content-Type', 'application/json');
+      const threadId = String(requestUrl.searchParams.get('threadId') || '').trim();
+      if (!threadId) {
+        res.writeHead(400).end(JSON.stringify({ ok: false, error: 'missing threadId' }));
+        return;
+      }
+      res.writeHead(200).end(JSON.stringify({
+        ok: true,
+        threadId,
+        names: ['Alice', 'Bob'],
+        total: 3,
+        capped: true,
+      }));
+      return;
+    }
+
+    if (req.method === 'POST' && requestPath === '/internal/record-outgoing') {
       const chunks = [];
       req.on('data', c => chunks.push(c));
       req.on('end', () => {
@@ -153,6 +173,36 @@ describe('GET /internal/qr', () => {
     });
     assert.equal(res.status, 404);
     assert.equal(res.body, 'no qr');
+  });
+});
+
+describe('GET /internal/group-info', () => {
+  it('rejects missing token with 403', async () => {
+    const res = await makeRequest('/internal/group-info?threadId=g1');
+    assert.equal(res.status, 403);
+    assert.equal(res.body, 'forbidden');
+  });
+
+  it('requires threadId after auth succeeds', async () => {
+    const res = await makeRequest('/internal/group-info', {
+      headers: { 'x-internal-token': TEST_TOKEN }
+    });
+    assert.equal(res.status, 400);
+    assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'missing threadId' });
+  });
+
+  it('returns member summary JSON for a threadId query', async () => {
+    const res = await makeRequest('/internal/group-info?threadId=g%201', {
+      headers: { 'x-internal-token': TEST_TOKEN }
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body), {
+      ok: true,
+      threadId: 'g 1',
+      names: ['Alice', 'Bob'],
+      total: 3,
+      capped: true,
+    });
   });
 });
 

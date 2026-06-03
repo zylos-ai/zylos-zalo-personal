@@ -1,6 +1,6 @@
 ---
 name: zalo-personal
-version: 0.1.5
+version: 0.1.6
 description: >-
   Zalo personal account communication channel (unofficial, via zca-js).
   Uses a real Zalo account instead of the official Bot Platform API.
@@ -77,7 +77,7 @@ Or directly (for testing):
 node ~/zylos/.claude/skills/zalo-personal/scripts/send.js <user_id> "message"
 ```
 
-Text is sent with Markdown styling by default for the v0.1.4 release line.
+Text is sent with Markdown styling by default.
 Set `message.textMode` to `"plain"` to opt out. Markdown support is intentionally
 basic: bold, italic, strikethrough, headings, quotes, code marker removal, link
 normalization, and ordered/unordered list styling. Zalo style ranges cannot
@@ -255,10 +255,16 @@ node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js dm-deny <user_id> [re
 node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js list-friends
 node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js list-groups
 node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js resolve <name-or-id>
+node ~/zylos/.claude/skills/zalo-personal/scripts/admin.js group-info <threadId>
 ```
 
 Directory commands require the running service because they call the active
 authenticated zca-js session through the internal API.
+
+`group-info <threadId>` returns group member names on demand through the live
+session. Member lists are not included in ordinary inbound group envelopes.
+Quoted inbound messages are exposed as `<replying-to message-id="..."
+from-user-id="...">...</replying-to>`.
 
 When `dmPolicy` is `pairing`, unknown DM users are queued as pending requests,
 the existing C4 admin notification is sent, and the bound owner also receives a

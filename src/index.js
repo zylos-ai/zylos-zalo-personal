@@ -404,15 +404,6 @@ async function getGroupName(groupId) {
   return String(groupId);
 }
 
-async function getGroupMembersSummary(groupId) {
-  try {
-    return await getGroupMembers(api, groupId, { cache: groupMembersCache, limit: 20 });
-  } catch (err) {
-    console.warn(`[zalo-personal] Group member summary unavailable for ${groupId}: ${err.message}`);
-    return null;
-  }
-}
-
 function isAuthorizedInboundEvent(threadId, senderId, isGroup) {
   if (isGroup) {
     if (config.groupPolicy === 'disabled') return false;
@@ -921,7 +912,6 @@ async function handleMessage(message) {
     groupName = await getGroupName(threadId);
     contextMessages = getHistory(threadId, messageId, config);
   }
-  const groupMembers = isGroup ? await getGroupMembersSummary(threadId) : null;
   const replyTo = buildReplyTo(data, messageCache);
 
   // In smart mode without @mention, append metadata instead of file path
@@ -938,8 +928,6 @@ async function handleMessage(message) {
     contextMessages: isGroup ? contextMessages : null,
     mediaPath: smartNoMention ? null : mediaPath,
     smartHint: smartNoMention,
-    wasMentioned: isGroup ? mentioned : undefined,
-    groupMembers,
     replyTo
   });
 
@@ -1198,12 +1186,15 @@ function startInternalServer() {
   const internalToken = getOrCreateInternalToken();
 
   internalServer = http.createServer((req, res) => {
-    if (req.url.startsWith('/internal/')) {
+    const requestUrl = new URL(req.url, 'http://127.0.0.1');
+    const requestPath = requestUrl.pathname;
+
+    if (requestPath.startsWith('/internal/')) {
       const token = req.headers['x-internal-token'];
       if (!timingSafeTokenEqual(token, internalToken)) { res.writeHead(403).end('forbidden'); return; }
     }
 
-    if (req.method === 'POST' && req.url === '/internal/record-outgoing') {
+    if (req.method === 'POST' && requestPath === '/internal/record-outgoing') {
       const chunks = [];
       let size = 0;
       req.on('data', chunk => {
@@ -1229,7 +1220,7 @@ function startInternalServer() {
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/internal/send') {
+    if (req.method === 'POST' && requestPath === '/internal/send') {
       const chunks = [];
       let size = 0;
       req.on('data', chunk => {
@@ -1370,7 +1361,7 @@ function startInternalServer() {
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/internal/clear-thinking') {
+    if (req.method === 'POST' && requestPath === '/internal/clear-thinking') {
       const chunks = [];
       let size = 0;
       req.on('data', chunk => {
@@ -1389,7 +1380,34 @@ function startInternalServer() {
       return;
     }
 
-    if (req.method === 'GET' && req.url === '/internal/status') {
+    if (req.method === 'GET' && requestPath === '/internal/group-info') {
+      res.setHeader('Content-Type', 'application/json');
+      const threadId = String(requestUrl.searchParams.get('threadId') || '').trim();
+      if (!threadId) {
+        res.writeHead(400).end(JSON.stringify({ ok: false, error: 'missing threadId' }));
+        return;
+      }
+      if (!api) {
+        res.writeHead(503).end(JSON.stringify({ ok: false, error: 'not connected' }));
+        return;
+      }
+      try {
+        const summary = await getGroupMembers(api, threadId, { cache: groupMembersCache })
+          || { names: [], total: 0, capped: false };
+        res.writeHead(200).end(JSON.stringify({
+          ok: true,
+          threadId,
+          names: summary.names,
+          total: summary.total,
+          ...(summary.capped ? { capped: true } : {})
+        }));
+      } catch (err) {
+        res.writeHead(500).end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && requestPath === '/internal/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
         connected: !!api && wsHealthy,
         wsHealthy,
@@ -1400,7 +1418,7 @@ function startInternalServer() {
       return;
     }
 
-    if (req.method === 'GET' && req.url === '/internal/qr') {
+    if (req.method === 'GET' && requestPath === '/internal/qr') {
       const qrPath = path.join(SESSIONS_DIR, 'qr.png');
       if (fs.existsSync(qrPath)) {
         res.writeHead(200, { 'Content-Type': 'image/png' });
