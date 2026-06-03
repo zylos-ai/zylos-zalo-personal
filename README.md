@@ -87,9 +87,11 @@ zylos uninstall zalo-personal
 
 For allowed groups, outbound/internal actions are fail-open by default. Add `groups[groupId].allowedActions` to opt in to per-group restrictions, for example `["text", "reaction"]` or `["*"]`.
 
+When private DM policy is set to `pairing`, unknown users are queued for approval. The admin notification still goes through C4, and the bound owner also receives a direct Zalo DM with the request details. The owner can reply with exact whole messages `approve` or `deny`; if multiple requests are pending, use `approve <user_id>` or `deny <user_id>`. The `dm-pending`, `dm-approve`, and `dm-deny` admin CLI commands remain available as the fallback path.
+
 ## Sending Formats
 
-Plain text is sent with basic Markdown styling by default for the v0.1.3 release line. Set `message.textMode` to `"plain"` to opt out. Supported formatting includes bold, italic, strikethrough, headings, quotes, code marker removal, link normalization, and ordered/unordered list styling. Zalo style ranges cannot overlap, so nested inline styles and inline emphasis inside styled list lines are flattened.
+Plain text is sent with basic Markdown styling by default for the v0.1.4 release line. Set `message.textMode` to `"plain"` to opt out. Supported formatting includes bold, italic, strikethrough, headings, quotes, code marker removal, link normalization, and ordered/unordered list styling. Zalo style ranges cannot overlap, so nested inline styles and inline emphasis inside styled list lines are flattened.
 
 Special send prefixes:
 
